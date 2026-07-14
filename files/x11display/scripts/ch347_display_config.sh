@@ -1,0 +1,179 @@
+#!/bin/bash
+# Strict parser/writer helpers for the small CH347 display tuning document.
+# This file is sourced by both the package provider and the standalone start
+# script.  It deliberately parses data instead of sourcing shell code.
+
+ch347_config_uint()
+{
+    local value="$1"
+    local minimum="$2"
+    local maximum="$3"
+    local decimal
+
+    case "$value" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    # Bound the input before arithmetic so an attacker cannot feed Bash an
+    # arbitrarily large integer expression.  All current limits fit 3 digits.
+    [ "${#value}" -le 3 ] || return 1
+    decimal=$((10#$value))
+    [ "$decimal" -ge "$minimum" ] && [ "$decimal" -le "$maximum" ]
+}
+
+ch347_read_display_config()
+{
+    local config="$1"
+    local line
+    local value
+    local seen_debug=0
+    local seen_fps=0
+    local seen_max=0
+    local seen_idle=0
+
+    CH347_CONFIG_DEBUG=0
+    CH347_CONFIG_FPS=""
+    CH347_CONFIG_MAX_FPS=""
+    CH347_CONFIG_IDLE_FPS=""
+
+    [ ! -L "$config" ] && [ -f "$config" ] || {
+        echo "CH347 display config is missing: $config" >&2
+        return 1
+    }
+    value=$(wc -c < "$config") || return 1
+    case "$value" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$value" -le 16384 ] || {
+        echo "CH347 display config exceeds 16384 bytes" >&2
+        return 1
+    }
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) continue ;;
+            DEBUG=*)
+                [ "$seen_debug" = 0 ] || {
+                    echo "duplicate DEBUG in CH347 display config" >&2
+                    return 1
+                }
+                value="${line#DEBUG=}"
+                [ "$value" = 0 ] || [ "$value" = 1 ] || {
+                    echo "DEBUG must be 0 or 1 in CH347 display config" >&2
+                    return 1
+                }
+                CH347_CONFIG_DEBUG="$value"
+                seen_debug=1
+                ;;
+            FPS=*)
+                [ "$seen_fps" = 0 ] || {
+                    echo "duplicate FPS in CH347 display config" >&2
+                    return 1
+                }
+                value="${line#FPS=}"
+                ch347_config_uint "$value" 1 240 || {
+                    echo "FPS must be an integer from 1 to 240" >&2
+                    return 1
+                }
+                CH347_CONFIG_FPS="$((10#$value))"
+                seen_fps=1
+                ;;
+            XCAP_MAX_FPS=*)
+                [ "$seen_max" = 0 ] || {
+                    echo "duplicate XCAP_MAX_FPS in CH347 display config" >&2
+                    return 1
+                }
+                value="${line#XCAP_MAX_FPS=}"
+                ch347_config_uint "$value" 1 240 || {
+                    echo "XCAP_MAX_FPS must be an integer from 1 to 240" >&2
+                    return 1
+                }
+                CH347_CONFIG_MAX_FPS="$((10#$value))"
+                seen_max=1
+                ;;
+            XCAP_IDLE_FPS=*)
+                [ "$seen_idle" = 0 ] || {
+                    echo "duplicate XCAP_IDLE_FPS in CH347 display config" >&2
+                    return 1
+                }
+                value="${line#XCAP_IDLE_FPS=}"
+                ch347_config_uint "$value" 0 60 || {
+                    echo "XCAP_IDLE_FPS must be an integer from 0 to 60" >&2
+                    return 1
+                }
+                CH347_CONFIG_IDLE_FPS="$((10#$value))"
+                seen_idle=1
+                ;;
+            *)
+                echo "unsupported assignment in CH347 display config" >&2
+                return 1
+                ;;
+        esac
+    done < "$config"
+
+    [ "$seen_fps" = 1 ] && [ "$seen_max" = 1 ] && [ "$seen_idle" = 1 ] || {
+        echo "CH347 display config is incomplete" >&2
+        return 1
+    }
+    [ "$CH347_CONFIG_FPS" = "$CH347_CONFIG_MAX_FPS" ] || {
+        echo "FPS and XCAP_MAX_FPS must match" >&2
+        return 1
+    }
+    [ "$CH347_CONFIG_IDLE_FPS" -le "$CH347_CONFIG_FPS" ] || {
+        echo "XCAP_IDLE_FPS must not exceed FPS" >&2
+        return 1
+    }
+    export CH347_CONFIG_DEBUG CH347_CONFIG_FPS CH347_CONFIG_MAX_FPS \
+        CH347_CONFIG_IDLE_FPS
+}
+
+ch347_write_display_config()
+{
+    local target="$1"
+    local debug="$2"
+    local fps="$3"
+    local max_fps="$4"
+    local idle_fps="$5"
+    local generation="${6:-}"
+    local directory
+    local tmp
+
+    [ "$debug" = 0 ] || [ "$debug" = 1 ] || return 1
+    ch347_config_uint "$fps" 1 240 || return 1
+    ch347_config_uint "$max_fps" 1 240 || return 1
+    ch347_config_uint "$idle_fps" 0 60 || return 1
+    [ "$fps" = "$max_fps" ] && [ "$idle_fps" -le "$fps" ] || return 1
+    if [ -n "$generation" ]; then
+        case "$generation" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        [ "${#generation}" -le 10 ] || return 1
+        generation=$((10#$generation))
+        [ "$generation" -le 2147483647 ] || return 1
+    fi
+
+    if { [ -e "$target" ] || [ -L "$target" ]; } &&
+            { [ -L "$target" ] || [ ! -f "$target" ]; }; then
+        echo "CH347 display config target must be a regular non-symlink file" >&2
+        return 1
+    fi
+
+    directory="$(dirname -- "$target")"
+    mkdir -p "$directory"
+    [ -d "$directory" ] && [ ! -L "$directory" ] || {
+        echo "CH347 display config directory must not be a symlink" >&2
+        return 1
+    }
+    tmp=$(mktemp "$directory/.ch347-display-config.XXXXXX") || return 1
+    (
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        {
+            [ -z "$generation" ] || printf 'MSYS_GENERATION=%s\n' "$generation"
+            printf 'DEBUG=%s\n' "$debug"
+            printf 'FPS=%s\n' "$fps"
+            printf 'XCAP_MAX_FPS=%s\n' "$max_fps"
+            printf 'XCAP_IDLE_FPS=%s\n' "$idle_fps"
+        } > "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$target"
+        trap - EXIT HUP INT TERM
+    )
+}

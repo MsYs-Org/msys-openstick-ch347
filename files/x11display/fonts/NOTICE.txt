@@ -1,0 +1,14 @@
+MSYS CJK bitmap font notice
+
+msys-cjk-14-regular.bdf and msys-cjk-14-bold.bdf are offline-rendered bitmap
+derivatives of the Simplified Chinese faces in NotoSansCJK-Regular.ttc and
+NotoSansCJK-Bold.ttc. They contain ASCII, GB2312 and the additional Unicode
+characters found in the MSYS translation catalogs at build time. The internal
+derivative family is "msyscjk"; an X11 compatibility alias named
+"Noto Sans CJK SC" lets existing MSYS Tk applications select it.
+
+Noto CJK copyright: 2010-2015 Google Corporation.
+Noto CJK and this derived font data are distributed under the SIL Open Font
+License 1.1. The complete upstream Debian copyright record and OFL text are in
+NOTO-COPYRIGHT.txt beside this notice. Generator source is retained under
+tools/bdf_from_ttc.c and tools/generate_core_font.sh.

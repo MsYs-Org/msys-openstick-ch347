@@ -1,0 +1,8 @@
+.gitignore
+README.md
+pyproject.toml
+files/x11display/fonts/
+files/x11display/ch347/ch347_best_params.env
+files/x11display/src/
+tests/
+tools/
