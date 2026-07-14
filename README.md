@@ -53,6 +53,12 @@ The stable SPI policy uses one merged dirty bounding box
 the manifest, vendor defaults, and both launcher layers do not silently enable
 the slow multi-rectangle path.
 
+Version 0.1.12 keeps that stable policy unchanged and adds low-frequency
+`dirty_stats` records from the sink.  They distinguish exact transmitted
+pixels, zero-damage passes, large refreshes, and true full-panel refreshes even
+when the visible debug overlay is disabled.  This lets Settings and one-pass
+acceptance inspect SPI behaviour without creating extra display damage.
+
 CH347 cable/USB loss is isolated from the X11 session. The detached daemon
 keeps the original Xorg `:24` process and all connected applications alive,
 then recreates only `xdamage_shm_capture` and `ch347_dirty_usb_sink` until the

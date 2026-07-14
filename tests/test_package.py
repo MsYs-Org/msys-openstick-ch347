@@ -91,6 +91,18 @@ class OpenStickPackageTests(unittest.TestCase):
             183,
         )
 
+    def test_sink_exposes_non_intrusive_refresh_counters(self) -> None:
+        sink = (ROOT / "files/x11display/bin/ch347_dirty_usb_sink").read_bytes()
+        for field in (
+            b"dirty_stats frame=",
+            b"zero_damage=",
+            b"full_refreshes=",
+            b"large_refreshes=",
+            b"last_sent_pixels=",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, sink)
+
     def test_provider_prefers_package_root_and_x11display_is_relocatable(self) -> None:
         provider = (ROOT / "scripts/msys_ch347_x11_provider.sh").read_text(
             encoding="utf-8"
