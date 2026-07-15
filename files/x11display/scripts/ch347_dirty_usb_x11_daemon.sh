@@ -42,6 +42,11 @@ CH347_MAX_RECTS="${CH347_MAX_RECTS:-1}"
 CH347_STALE_MS="${CH347_STALE_MS:-0}"
 CH347_STALE_BUDGET="${CH347_STALE_BUDGET:-60}"
 CH347_HOLD_CS="${CH347_HOLD_CS:-1}"
+if [ "$CH347_MAX_RECTS" = "1" ] && [ "$CH347_STALE_MS" = "0" ]; then
+    CH347_FULL_AREA_POLICY="inactive-single-bbox"
+else
+    CH347_FULL_AREA_POLICY="active"
+fi
 CH347_LATEST_ONLY="${CH347_LATEST_ONLY:-1}"
 CH347_URB_TIMEOUT_MS="${CH347_URB_TIMEOUT_MS:-1500}"
 CH347_USB_DEBUG="${CH347_USB_DEBUG:-0}"
@@ -405,6 +410,7 @@ start_x_stack()
     local render_s
     local rest_s
     local gate_render_ms
+
     xnum="${DISPLAY_ID#:}"
     xnum="${xnum%%.*}"
     if [ "$XSERVER" = "Xvfb" ]; then
@@ -426,6 +432,7 @@ start_x_stack()
         echo "X server failed to become ready on $DISPLAY_ID" >>"$LOG_FILE"
         return 1
     fi
+
     if [ "$XSERVER" != "Xvfb" ]; then
         if ! DISPLAY="$DISPLAY_ID" xrandr --size "${WIDTH}x${HEIGHT}" >>"$LOG_FILE" 2>&1; then
             echo "Xorg cannot select logical size ${WIDTH}x${HEIGHT}" >>"$LOG_FILE"
@@ -433,6 +440,7 @@ start_x_stack()
         fi
     fi
     validate_x_root_dimensions || return 1
+
     case "$WM" in
         none)
             WM_PID=""
@@ -517,7 +525,7 @@ mkdir -p "$RUN_DIR"
 echo "$$" > "$PID_FILE"
 publish_ch347_link_state checking
 
-echo "dirty_usb_x11_start capture=$CAPTURE fps=$FPS xcap_max_fps=$XCAP_MAX_FPS xcap_idle_fps=$XCAP_IDLE_FPS xcap_output=$XCAP_OUTPUT rotation=$DISPLAY_ROTATION logical=${WIDTH}x${HEIGHT} transport=shm-mailbox max_frames=$MAX_FRAMES depth=$DEPTH app=$APP wm=$WM display=$DISPLAY_ID pixfmt=$PIXFMT gated=$GATED render_ms=$RENDER_MS packet_us=$PACKET_US clock=$CH347_CLOCK full_pct=$CH347_FULL_AREA_PCT max_rects=$CH347_MAX_RECTS stale_ms=$CH347_STALE_MS stale_budget=$CH347_STALE_BUDGET hold_cs=$CH347_HOLD_CS latest_only=$CH347_LATEST_ONLY touch=$CH347_TOUCH touch_irq=$CH347_TOUCH_USE_IRQ cursor=$CH347_CURSOR calibrate=$CH347_TOUCH_CALIBRATE gpio_overlay=$CH347_GPIO_OVERLAY gpio_overlay_ms=$CH347_GPIO_OVERLAY_MS urb_timeout_ms=$CH347_URB_TIMEOUT_MS restart_on_fail=$CH347_RESTART_ON_FAIL sink=$CH347_SINK" >>"$LOG_FILE"
+echo "dirty_usb_x11_start capture=$CAPTURE fps=$FPS xcap_max_fps=$XCAP_MAX_FPS xcap_idle_fps=$XCAP_IDLE_FPS xcap_output=$XCAP_OUTPUT rotation=$DISPLAY_ROTATION logical=${WIDTH}x${HEIGHT} transport=shm-mailbox max_frames=$MAX_FRAMES depth=$DEPTH app=$APP wm=$WM display=$DISPLAY_ID pixfmt=$PIXFMT gated=$GATED render_ms=$RENDER_MS packet_us=$PACKET_US clock=$CH347_CLOCK full_pct_config=$CH347_FULL_AREA_PCT full_pct_policy=$CH347_FULL_AREA_POLICY max_rects=$CH347_MAX_RECTS stale_ms=$CH347_STALE_MS stale_budget=$CH347_STALE_BUDGET hold_cs=$CH347_HOLD_CS latest_only=$CH347_LATEST_ONLY touch=$CH347_TOUCH touch_irq=$CH347_TOUCH_USE_IRQ cursor=$CH347_CURSOR calibrate=$CH347_TOUCH_CALIBRATE gpio_overlay=$CH347_GPIO_OVERLAY gpio_overlay_ms=$CH347_GPIO_OVERLAY_MS urb_timeout_ms=$CH347_URB_TIMEOUT_MS restart_on_fail=$CH347_RESTART_ON_FAIL sink=$CH347_SINK" >>"$LOG_FILE"
 start_x_stack
 
 run_stream_once()

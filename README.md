@@ -76,6 +76,10 @@ overwrite pending drag positions or deliberately skip intermediate drag
 frames.  The stable single-bbox dirty calculation remains unchanged, and one
 frame's rectangle is still fully reaped before another frame starts.
 
+Version 0.1.17 makes the effective dirty policy explicit in diagnostics. With
+the stable `max_rects=1, stale_ms=0` profile, the direct single-bbox path is in
+use and the configured 40% fallback is reported as inactive.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same
