@@ -111,6 +111,7 @@ CH347_DEVICE_NODE="${CH347_DEVICE_NODE:-/dev/ch34x_pis0}"
 CH347_WAIT_SEC="${CH347_WAIT_SEC:-12}"
 RUN_DIR="${RUN_DIR:-/tmp/ch347_dirty_usb_x11}"
 PID_FILE="$RUN_DIR/pids"
+CH347_LINK_STATE_FILE="${CH347_LINK_STATE_FILE:-$RUN_DIR/ch347-link-state.env}"
 STACK_OWNER_FILE="${CH347_STACK_OWNER_FILE:-}"
 STACK_OWNER_TOKEN="${CH347_STACK_OWNER_TOKEN:-}"
 CH347_TOUCH_MODE_FILE="${CH347_TOUCH_MODE_FILE:-$RUN_DIR/touch_mode}"
@@ -130,6 +131,7 @@ STOP_REQUESTED=0
 STREAM_CAP_PID=""
 STREAM_SINK_PID=""
 X_SESSION_LOST=0
+PUBLISHED_CH347_LINK_STATE=""
 
 case "$CH347_RESTART_MAX" in
     ''|*[!0-9]*) CH347_RESTART_MAX=0 ;;
@@ -164,6 +166,25 @@ discover_ch347()
     done
 
     return 1
+}
+
+publish_ch347_link_state()
+{
+    local state="$1"
+    local tmp="$CH347_LINK_STATE_FILE.$$.tmp"
+
+    case "$state" in
+        checking|healthy|degraded) ;;
+        *) return 2 ;;
+    esac
+    # A superseded detached daemon must not overwrite the current
+    # generation's transport health edge.
+    owns_stack || return 0
+    [ "$state" != "$PUBLISHED_CH347_LINK_STATE" ] || return 0
+    printf 'MSYS_CH347_LINK_STATE=%s\n' "$state" > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$CH347_LINK_STATE_FILE"
+    PUBLISHED_CH347_LINK_STATE="$state"
 }
 
 force_ch347_reconnect()
@@ -229,7 +250,10 @@ wait_ch347_bound()
             binding=$(lsusb -t 2>/dev/null |
                 grep 'If 4,.*Driver=ch34x_pis,' | head -n 1 || true)
             case "$binding" in
-                *', 480M') return 0 ;;
+                *', 480M')
+                    publish_ch347_link_state healthy
+                    return 0
+                    ;;
                 '') wrong_speed_checks=0 ;;
                 *)
                     wrong_speed_checks=$((wrong_speed_checks + 1))
@@ -249,6 +273,8 @@ wait_ch347_bound()
 
     lsusb -t >&2 || true
     echo "CH347 did not settle as ch34x_pis at 480M within ${CH347_WAIT_SEC}s." >&2
+    publish_ch347_link_state degraded
+    echo "dirty_usb_x11_link_state state=degraded required_speed=480M" >>"$LOG_FILE"
     return 1
 }
 
@@ -489,6 +515,7 @@ ensure_x_stack()
 # MSYS_CH347_DAEMON_MAIN
 mkdir -p "$RUN_DIR"
 echo "$$" > "$PID_FILE"
+publish_ch347_link_state checking
 
 echo "dirty_usb_x11_start capture=$CAPTURE fps=$FPS xcap_max_fps=$XCAP_MAX_FPS xcap_idle_fps=$XCAP_IDLE_FPS xcap_output=$XCAP_OUTPUT rotation=$DISPLAY_ROTATION logical=${WIDTH}x${HEIGHT} transport=shm-mailbox max_frames=$MAX_FRAMES depth=$DEPTH app=$APP wm=$WM display=$DISPLAY_ID pixfmt=$PIXFMT gated=$GATED render_ms=$RENDER_MS packet_us=$PACKET_US clock=$CH347_CLOCK full_pct=$CH347_FULL_AREA_PCT max_rects=$CH347_MAX_RECTS stale_ms=$CH347_STALE_MS stale_budget=$CH347_STALE_BUDGET hold_cs=$CH347_HOLD_CS latest_only=$CH347_LATEST_ONLY touch=$CH347_TOUCH touch_irq=$CH347_TOUCH_USE_IRQ cursor=$CH347_CURSOR calibrate=$CH347_TOUCH_CALIBRATE gpio_overlay=$CH347_GPIO_OVERLAY gpio_overlay_ms=$CH347_GPIO_OVERLAY_MS urb_timeout_ms=$CH347_URB_TIMEOUT_MS restart_on_fail=$CH347_RESTART_ON_FAIL sink=$CH347_SINK" >>"$LOG_FILE"
 start_x_stack

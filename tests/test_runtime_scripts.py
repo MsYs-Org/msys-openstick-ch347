@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -153,6 +154,44 @@ test "$(cat "$target")" = $'DEBUG=1\\nFPS=90\\nXCAP_MAX_FPS=90\\nXCAP_IDLE_FPS=0
                 timeout=5,
             )
             self.assertEqual(safely_written.returncode, 0, safely_written.stderr)
+
+    def test_long_480m_wait_failure_exports_one_degraded_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = root / "link.env"
+            log = root / "live.log"
+            command = self.daemon_functions() + "\nwait_ch347_bound\n"
+            driver = root / "link-state-test.sh"
+            write_executable(driver, command)
+            run = subprocess.run(
+                ["bash", str(driver)],
+                env={
+                    **os.environ,
+                    "RUN_DIR": str(root),
+                    "CH347_USB_SYS": str(root / "missing-usb"),
+                    "CH347_DEVICE_NODE": str(root / "missing-device"),
+                    "CH347_LINK_STATE_FILE": str(state),
+                    "CH347_WAIT_SEC": "1",
+                },
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            self.assertNotEqual(run.returncode, 0)
+            self.assertTrue(
+                state.is_file(),
+                "missing degraded state; "
+                f"rc={run.returncode} stdout={run.stdout!r} stderr={run.stderr!r}",
+            )
+            self.assertEqual(
+                state.read_text(encoding="ascii"),
+                "MSYS_CH347_LINK_STATE=degraded\n",
+            )
+            self.assertIn(
+                "dirty_usb_x11_link_state state=degraded required_speed=480M",
+                log.read_text(encoding="utf-8"),
+            )
 
     def test_dimension_probe_consumes_xdpyinfo_and_checks_exact_size(self) -> None:
         source = DAEMON.read_text(encoding="utf-8")
@@ -374,6 +413,10 @@ while :; do sleep 1; done
                     )
                 self.assertIsNone(process.poll())
                 self.assertTrue(usb_reset.exists(), "12M transport was not reset")
+                self.assertEqual(
+                    (run_dir / "ch347-link-state.env").read_text(encoding="ascii"),
+                    "MSYS_CH347_LINK_STATE=healthy\n",
+                )
                 x_pids = [int(value) for value in x_launches.read_text().splitlines()]
                 self.assertEqual(len(x_pids), 1)
                 spawned.update(x_pids)
@@ -483,6 +526,128 @@ while :; do sleep 1; done
                     outside.read_text(encoding="ascii"),
                     "FPS=60\nXCAP_MAX_FPS=60\nXCAP_IDLE_FPS=1\n",
                 )
+
+    def test_provider_publishes_one_failure_and_one_recovery_notice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "bin"
+            commands.mkdir()
+            write_executable(
+                commands / "xdpyinfo",
+                """#!/bin/sh
+printf 'name of display: :77\\n'
+printf '  dimensions:    320x480 pixels (84x127 millimeters)\\n'
+printf '  depth of root window:    24 planes\\n'
+""",
+            )
+            start = root / "start.sh"
+            stop = root / "stop.sh"
+            write_executable(
+                start,
+                """#!/bin/bash
+set -euo pipefail
+mkdir -p "$RUN_DIR"
+printf 'MSYS_CH347_LINK_STATE=checking\\n' >"$CH347_LINK_STATE_FILE"
+nohup sleep 60 >/dev/null 2>&1 &
+printf '%s\\n' "$!" >"$RUN_DIR/pids"
+""",
+            )
+            write_executable(
+                stop,
+                """#!/bin/sh
+if test -f "$RUN_DIR/pids"; then
+    while IFS= read -r pid; do
+        test -z "$pid" || kill "$pid" 2>/dev/null || true
+    done <"$RUN_DIR/pids"
+fi
+rm -f "$RUN_DIR/pids"
+""",
+            )
+            run_dir = root / "run"
+            state_root = root / "state"
+            (state_root / "ch347").mkdir(parents=True)
+            (state_root / "ch347/fps.env").write_text(
+                "DEBUG=0\nFPS=60\nXCAP_MAX_FPS=60\nXCAP_IDLE_FPS=0\n",
+                encoding="ascii",
+            )
+            runtime_dir = root / "runtime"
+            runtime_dir.mkdir()
+            ready = run_dir / "ready.json"
+            link_state = run_dir / "ch347-link-state.env"
+            supervisor, component = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_SEQPACKET
+            )
+            supervisor.settimeout(2.0)
+            process = subprocess.Popen(
+                ["bash", str(PROVIDER)],
+                env={
+                    **os.environ,
+                    "PATH": f"{commands}:/usr/bin:/bin",
+                    "RUN_DIR": str(run_dir),
+                    "MSYS_X11DISPLAY_ROOT": str(ROOT / "files/x11display"),
+                    "CH347_START_SCRIPT": str(start),
+                    "CH347_STOP_SCRIPT": str(stop),
+                    "MSYS_X11_READY_FILE": str(ready),
+                    "MSYS_DISPLAY_SESSION_STATE_FILE": str(
+                        runtime_dir / "display-session.json"
+                    ),
+                    "MSYS_RUNTIME_DIR": str(runtime_dir),
+                    "MSYS_APP_STATE_DIR": str(state_root),
+                    "MSYS_COMPONENT_ID": (
+                        "org.msys.openstick.ch347:x11-spi-touch-output"
+                    ),
+                    "MSYS_GENERATION": "1",
+                    "MSYS_CONTROL_FD": str(component.fileno()),
+                    "MSYS_PYTHON": sys.executable,
+                    "MSYS_LOCALE": "zh-CN",
+                    "DISPLAY": ":77",
+                    "DISPLAY_ID": ":77",
+                    "CH347_TOUCH": "0",
+                    "MSYS_CH347_MONITOR_INTERVAL": "0.05",
+                    "MSYS_CH347_NOTICE_MIN_INTERVAL_SEC": "10",
+                },
+                pass_fds=(component.fileno(),),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+                wait_until(lambda: ready.is_file())
+                link_state.write_text(
+                    "MSYS_CH347_LINK_STATE=degraded\n", encoding="ascii"
+                )
+                failed = json.loads(supervisor.recv(65536).decode("utf-8"))
+                self.assertEqual(failed["payload"]["state"], "degraded")
+                self.assertIn("检查接口", failed["payload"]["message"])
+
+                # Rewriting the same state does not create another event.
+                link_state.write_text(
+                    "MSYS_CH347_LINK_STATE=degraded\n", encoding="ascii"
+                )
+                supervisor.settimeout(0.2)
+                with self.assertRaises(TimeoutError):
+                    supervisor.recv(65536)
+
+                link_state.write_text(
+                    "MSYS_CH347_LINK_STATE=healthy\n", encoding="ascii"
+                )
+                supervisor.settimeout(2.0)
+                recovered = json.loads(supervisor.recv(65536).decode("utf-8"))
+                self.assertEqual(recovered["payload"]["state"], "healthy")
+                self.assertIn("恢复到 480M", recovered["payload"]["message"])
+                self.assertIsNone(process.poll())
+            finally:
+                component.close()
+                supervisor.close()
+                if process.poll() is None:
+                    process.send_signal(signal.SIGTERM)
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate(timeout=2)
+                elif process.stdout is not None:
+                    process.stdout.close()
 
     def test_provider_handover_does_not_stop_replacement_stack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

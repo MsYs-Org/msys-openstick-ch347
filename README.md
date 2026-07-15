@@ -18,6 +18,15 @@ ownership token. A delayed cleanup from an older `msysd` generation can stop
 only its own processes; it cannot remove the active generation's pid file or
 rebind the active CH347 USB interface.
 
+If a loose connector leaves CH347 below its required 480 Mbit/s speed for the
+full transport wait window, the daemon publishes one atomic `degraded` edge.
+The managed provider turns that edge into one localized MSYS notification and
+rate-limits repeated failures to one per minute. A later 480 Mbit/s edge emits
+one recovery notification. This path keeps Xorg `:24` and every X11 client
+alive; it neither reopens applications nor depends on D-Bus. Standalone
+`/root/x11display` exposes the same state in
+`/tmp/ch347_dirty_usb_x11/ch347-link-state.env` for an optional supervisor.
+
 Platform contracts remain explicit: the board supplies Linux USB access, Bash,
 Xorg plus its X11/XDamage libraries, and the CH347 device. No target package
 manager, systemd, D-Bus, logind, or Python installation is invoked. The normal

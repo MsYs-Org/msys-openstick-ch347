@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.openstick.ch347",
     "name": "OpenStick CH347 X11 Display",
-    "version": "0.1.13",
+    "version": "0.1.14",
     "kind": "driver",
     "vendor": "MSYS",
     "summary": "Self-contained aarch64 CH347/ST7796 X11 display and touch provider"
@@ -53,7 +53,8 @@
       "permissions": [
         "device:usb:ch347",
         "display:x11-server",
-        "input:touch"
+        "input:touch",
+        "mipc.event:publish:msys.role.notification-presenter"
       ]
     }
   ]

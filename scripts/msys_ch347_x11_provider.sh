@@ -5,6 +5,7 @@ umask 077
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SESSION_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 STATE_ENTRY="$SESSION_ROOT/scripts/msys_display_session_state.py"
+LINK_NOTICE_ENTRY="$SESSION_ROOT/scripts/msys_ch347_link_notice.py"
 if [ -n "${MSYS_X11DISPLAY_ROOT:-}" ]; then
     X11DISPLAY_ROOT="$MSYS_X11DISPLAY_ROOT"
 elif [ -n "${MSYS_PACKAGE_ROOT:-}" ] && [ -d "$MSYS_PACKAGE_ROOT/files/x11display" ]; then
@@ -22,6 +23,8 @@ DISPLAY_CONFIG_HELPER="$X11DISPLAY_ROOT/scripts/ch347_display_config.sh"
 RUN_DIR="${RUN_DIR:-/tmp/ch347_dirty_usb_x11}"
 PID_FILE="$RUN_DIR/pids"
 LOG_FILE="$RUN_DIR/live.log"
+LINK_STATE_FILE="${CH347_LINK_STATE_FILE:-$RUN_DIR/ch347-link-state.env}"
+export CH347_LINK_STATE_FILE="$LINK_STATE_FILE"
 APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-$RUN_DIR/display-config.applied.env}"
 READY_FILE="${MSYS_X11_READY_FILE:-$RUN_DIR/msys.ready}"
 if [ -n "${MSYS_DISPLAY_SESSION_STATE_FILE:-}" ]; then
@@ -45,7 +48,10 @@ CLEANED=0
 DISPLAY_READY=0
 PUBLISHED_DISPLAY_SIGNATURE=""
 PUBLISHED_INPUT_MODE=""
+LINK_ALERT_ACTIVE=0
+LAST_DEGRADED_NOTICE_AT=-3600
 MONITOR_INTERVAL="${MSYS_CH347_MONITOR_INTERVAL:-0.5}"
+LINK_NOTICE_MIN_INTERVAL="${MSYS_CH347_NOTICE_MIN_INTERVAL_SEC:-60}"
 DISPLAY_FAIL_LIMIT="${MSYS_CH347_DISPLAY_FAIL_LIMIT:-3}"
 MISSING_PID_LIMIT="${MSYS_CH347_MISSING_PID_LIMIT:-3}"
 LOG_MAX_BYTES="${MSYS_CH347_LOG_MAX_BYTES:-1048576}"
@@ -61,6 +67,9 @@ LOG_CHECK_TICKS="${MSYS_CH347_LOG_CHECK_TICKS:-10}"
 case "$MONITOR_INTERVAL" in
     ''|*[!0-9.]*|*.*.*) MONITOR_INTERVAL=0.5 ;;
 esac
+case "$LINK_NOTICE_MIN_INTERVAL" in
+    ''|*[!0-9]*|?????*) LINK_NOTICE_MIN_INTERVAL=60 ;;
+esac
 case "$DISPLAY_FAIL_LIMIT" in
     ''|*[!0-9]*) DISPLAY_FAIL_LIMIT=3 ;;
 esac
@@ -75,10 +84,13 @@ case "$LOG_CHECK_TICKS" in
 esac
 LOG_MAX_BYTES=$((10#$LOG_MAX_BYTES))
 LOG_CHECK_TICKS=$((10#$LOG_CHECK_TICKS))
+LINK_NOTICE_MIN_INTERVAL=$((10#$LINK_NOTICE_MIN_INTERVAL))
 [ "$LOG_MAX_BYTES" -ge 1024 ] && [ "$LOG_MAX_BYTES" -le 16777216 ] || LOG_MAX_BYTES=1048576
 [ "$LOG_CHECK_TICKS" -ge 1 ] && [ "$LOG_CHECK_TICKS" -le 120 ] || LOG_CHECK_TICKS=10
 [ "$DISPLAY_FAIL_LIMIT" -ge 2 ] || DISPLAY_FAIL_LIMIT=2
 [ "$MISSING_PID_LIMIT" -ge 2 ] || MISSING_PID_LIMIT=2
+[ "$LINK_NOTICE_MIN_INTERVAL" -ge 10 ] &&
+    [ "$LINK_NOTICE_MIN_INTERVAL" -le 3600 ] || LINK_NOTICE_MIN_INTERVAL=60
 
 atomic_write_line()
 {
@@ -298,6 +310,73 @@ find_session_python()
     fi
 }
 
+read_ch347_link_state()
+{
+    local state
+    local size
+
+    [ -f "$LINK_STATE_FILE" ] && [ ! -L "$LINK_STATE_FILE" ] || return 1
+    size=$(stat -c %s -- "$LINK_STATE_FILE" 2>/dev/null) || return 1
+    case "$size" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$size" -le 96 ] || return 1
+    state=$(cat -- "$LINK_STATE_FILE" 2>/dev/null) || return 1
+    case "$state" in
+        MSYS_CH347_LINK_STATE=checking) printf 'checking\n' ;;
+        MSYS_CH347_LINK_STATE=healthy) printf 'healthy\n' ;;
+        MSYS_CH347_LINK_STATE=degraded) printf 'degraded\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+publish_ch347_link_notice()
+{
+    local state="$1"
+    local python
+
+    [ -n "${MSYS_CONTROL_FD:-}" ] || return 1
+    [ -f "$LINK_NOTICE_ENTRY" ] || return 1
+    python=$(find_session_python) || return 1
+    "$python" "$LINK_NOTICE_ENTRY" --state "$state"
+}
+
+observe_ch347_link_notice()
+{
+    local state
+    local elapsed
+
+    state=$(read_ch347_link_state) || return 0
+    case "$state" in
+        checking) return 0 ;;
+        healthy)
+            if [ "$LINK_ALERT_ACTIVE" = "1" ]; then
+                if publish_ch347_link_notice healthy; then
+                    echo "msys-ch347-provider: link recovery notification published speed=480M"
+                else
+                    echo "msys-ch347-provider: link recovery notification unavailable" >&2
+                fi
+                # Consume the transition even when the private channel is
+                # unavailable; a notice helper failure must not create a
+                # rapid event/log loop.
+                LINK_ALERT_ACTIVE=0
+            fi
+            ;;
+        degraded)
+            [ "$LINK_ALERT_ACTIVE" = "0" ] || return 0
+            elapsed=$((SECONDS - LAST_DEGRADED_NOTICE_AT))
+            [ "$elapsed" -ge "$LINK_NOTICE_MIN_INTERVAL" ] || return 0
+            LAST_DEGRADED_NOTICE_AT="$SECONDS"
+            if publish_ch347_link_notice degraded; then
+                LINK_ALERT_ACTIVE=1
+                echo "msys-ch347-provider: link failure notification published required_speed=480M"
+            else
+                echo "msys-ch347-provider: link failure notification unavailable" >&2
+            fi
+            ;;
+    esac
+}
+
 publish_state_file()
 {
     local state_file="$1"
@@ -484,7 +563,7 @@ cleanup()
         if owns_session_state; then
             rm -f "$SESSION_STATE_FILE" "$SESSION_OWNER_FILE"
         fi
-        rm -f "$READY_FILE" "$OWNER_FILE" "$APPLIED_CONFIG_FILE"
+        rm -f "$READY_FILE" "$OWNER_FILE" "$APPLIED_CONFIG_FILE" "$LINK_STATE_FILE"
     else
         echo "msys-ch347-provider: ownership moved; leaving replacement stack running"
     fi
@@ -584,6 +663,8 @@ while :; do
     # periodic refresh could reclaim display-session.json with stale
     # generation metadata after the replacement has become ready.
     if superseded; then exit 0; fi
+
+    observe_ch347_link_notice
 
     log_check_count=$((log_check_count + 1))
     if [ "$log_check_count" -ge "$LOG_CHECK_TICKS" ]; then

@@ -37,6 +37,10 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertEqual(component["env"]["DEBUG"], "0")
         self.assertEqual(component["env"]["XCAP_IDLE_FPS"], "0")
         self.assertEqual(component["env"]["CH347_MAX_RECTS"], "1")
+        self.assertIn(
+            "mipc.event:publish:msys.role.notification-presenter",
+            component["permissions"],
+        )
         display_output = next(
             item for item in component["provides"]
             if item.get("role") == "display-output"
@@ -60,6 +64,7 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertTrue((ROOT / package_entry).is_file())
         required = (
             "scripts/msys_display_session_state.py",
+            "scripts/msys_ch347_link_notice.py",
             "msys_x11_session/display_session.py",
             "files/x11display/scripts/start_ch347_dirty_usb_x11.sh",
             "files/x11display/scripts/ch347_display_config.sh",
@@ -161,6 +166,8 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertIn("publish_applied_display_config", provider)
         self.assertIn("if owns_stack; then", daemon)
         self.assertIn("shared state preserved", daemon)
+        self.assertIn("publish_ch347_link_state degraded", daemon)
+        self.assertIn("observe_ch347_link_notice", provider)
 
     def test_rejected_bitmap_font_experiment_is_not_in_the_maf(self) -> None:
         ignored = (ROOT / ".msys-packageignore").read_text(encoding="utf-8").splitlines()
