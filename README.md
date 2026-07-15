@@ -86,6 +86,12 @@ compact font scale, selected metric rows, and a bounded sample interval. It
 uses the existing single bounding-box renderer without changing its damage
 selection policy.
 
+Version 0.1.19 keeps an enabled overlay live while full-frame mailbox input is
+idle. Its bounded timer sends only the overlay rectangle; the disabled default
+adds no timer or damage. Rect-protocol overlay updates are folded into the
+existing damage as one bounding box when `max_rects=1`; the stable dirty-bbox
+implementation and defaults remain unchanged.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same

@@ -30,7 +30,7 @@ class OpenStickPackageTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project).group(1)
         self.assertEqual(package["id"], "org.msys.openstick.ch347")
-        self.assertEqual(package["version"], "0.1.18")
+        self.assertEqual(package["version"], "0.1.19")
         self.assertEqual(package["version"], version)
         self.assertEqual(component["id"], "x11-spi-touch-output")
         self.assertEqual(component["readiness"]["mode"], "x11-display")
