@@ -1,6 +1,6 @@
 [project]
 name = "msys-openstick-ch347"
-version = "0.1.19"
+version = "0.1.20"
 description = "Self-contained OpenStick CH347 display-output package"
 requires-python = ">=3.10"
 dependencies = []

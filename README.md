@@ -92,6 +92,11 @@ adds no timer or damage. Rect-protocol overlay updates are folded into the
 existing damage as one bounding box when `max_rects=1`; the stable dirty-bbox
 implementation and defaults remain unchanged.
 
+Version 0.1.20 disables the LCD-side touch cursor by default at every packaged
+launch layer. Touch movement therefore injects input without manufacturing
+framebuffer damage; `CH347_CURSOR=1` remains an explicit calibration/debug
+override.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same
