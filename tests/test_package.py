@@ -30,6 +30,7 @@ class OpenStickPackageTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project).group(1)
         self.assertEqual(package["id"], "org.msys.openstick.ch347")
+        self.assertEqual(package["version"], "0.1.16")
         self.assertEqual(package["version"], version)
         self.assertEqual(component["id"], "x11-spi-touch-output")
         self.assertEqual(component["readiness"]["mode"], "x11-display")
@@ -108,11 +109,11 @@ class OpenStickPackageTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, sink)
 
-    def test_capture_coalesces_to_latest_frame_while_spi_is_busy(self) -> None:
+    def test_capture_does_not_advertise_latest_frame_coalescing(self) -> None:
         capture = (
             ROOT / "files/x11display/bin/xdamage_shm_capture"
         ).read_bytes()
-        self.assertIn(b"mailbox_policy=latest", capture)
+        self.assertNotIn(b"mailbox_policy=latest", capture)
 
     def test_provider_prefers_package_root_and_x11display_is_relocatable(self) -> None:
         provider = (ROOT / "scripts/msys_ch347_x11_provider.sh").read_text(
