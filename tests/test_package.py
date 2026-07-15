@@ -108,6 +108,12 @@ class OpenStickPackageTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, sink)
 
+    def test_capture_coalesces_to_latest_frame_while_spi_is_busy(self) -> None:
+        capture = (
+            ROOT / "files/x11display/bin/xdamage_shm_capture"
+        ).read_bytes()
+        self.assertIn(b"mailbox_policy=latest", capture)
+
     def test_provider_prefers_package_root_and_x11display_is_relocatable(self) -> None:
         provider = (ROOT / "scripts/msys_ch347_x11_provider.sh").read_text(
             encoding="utf-8"

@@ -68,6 +68,12 @@ pixels, zero-damage passes, large refreshes, and true full-panel refreshes even
 when the visible debug overlay is disabled.  This lets Settings and one-pass
 acceptance inspect SPI behaviour without creating extra display damage.
 
+Version 0.1.15 removes the mailbox's hidden one-intermediate-frame FIFO.  The
+capture side now keeps overwriting versioned slots while a slow SPI rectangle
+is in flight; after that rectangle completes, the sink jumps directly to the
+newest complete frame.  The stable single-bbox dirty calculation is unchanged,
+and one frame's rectangles are still fully reaped before another frame starts.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same
