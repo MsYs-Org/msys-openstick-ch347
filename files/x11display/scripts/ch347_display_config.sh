@@ -284,3 +284,58 @@ ch347_debug_overlay_items_text()
     done
     printf '%s\n' "$output"
 }
+
+ch347_read_cursor_config()
+{
+    local config="$1" line value seen=0 size
+
+    CH347_CONFIG_CURSOR_ENABLED=0
+    [ ! -L "$config" ] && [ -f "$config" ] || return 1
+    size=$(wc -c < "$config") || return 1
+    case "$size" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$size" -le 256 ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) continue ;;
+            CH347_CURSOR=*)
+                [ "$seen" = 0 ] || return 1
+                value="${line#CH347_CURSOR=}"
+                [ "$value" = 0 ] || [ "$value" = 1 ] || return 1
+                CH347_CONFIG_CURSOR_ENABLED="$value"
+                seen=1
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$config"
+    [ "$seen" = 1 ] || return 1
+    export CH347_CONFIG_CURSOR_ENABLED
+}
+
+ch347_write_cursor_config()
+{
+    local target="$1" enabled="$2" generation="${3:-}" directory tmp
+
+    [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || return 1
+    if [ -n "$generation" ]; then
+        case "$generation" in ''|*[!0-9]*) return 1 ;; esac
+        [ "${#generation}" -le 10 ] || return 1
+        generation=$((10#$generation))
+        [ "$generation" -le 2147483647 ] || return 1
+    fi
+    if { [ -e "$target" ] || [ -L "$target" ]; } &&
+            { [ -L "$target" ] || [ ! -f "$target" ]; }; then return 1; fi
+    directory="$(dirname -- "$target")"
+    mkdir -p "$directory"
+    [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+    tmp=$(mktemp "$directory/.ch347-cursor.XXXXXX") || return 1
+    (
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        {
+            [ -z "$generation" ] || printf 'MSYS_GENERATION=%s\n' "$generation"
+            printf 'CH347_CURSOR=%s\n' "$enabled"
+        } > "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$target"
+        trap - EXIT HUP INT TERM
+    )
+}

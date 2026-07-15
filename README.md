@@ -97,6 +97,13 @@ launch layer. Touch movement therefore injects input without manufacturing
 framebuffer damage; `CH347_CURSOR=1` remains an explicit calibration/debug
 override.
 
+Version 0.1.21 provisions that opt-in as a strict mutable `cursor.env`
+document. The provider exports its persisted value before launch and publishes
+a generation-bound applied receipt before READY, so HAL and Settings never
+confuse a saved value with the value running in the sink. Older package
+versions safely ignore the extra state file and retain their cursor-off
+default during rollback.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same

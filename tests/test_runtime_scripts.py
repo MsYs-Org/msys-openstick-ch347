@@ -201,6 +201,47 @@ test "$(cat "$target")" = $'DEBUG=1\\nFPS=90\\nXCAP_MAX_FPS=90\\nXCAP_IDLE_FPS=0
             )
             self.assertNotEqual(rejected_overlay.returncode, 0)
 
+            cursor = root / "cursor.env"
+            cursor.write_text("CH347_CURSOR=1\n", encoding="ascii")
+            cursor_command = (
+                f'. "{DISPLAY_CONFIG}"; '
+                f'ch347_read_cursor_config "{cursor}"; '
+                'printf "%s\\n" "$CH347_CONFIG_CURSOR_ENABLED"; '
+                f'ch347_write_cursor_config "{root / "cursor-written.env"}" 1 9'
+            )
+            cursor_result = subprocess.run(
+                ["bash", "-c", cursor_command],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            self.assertEqual(cursor_result.returncode, 0, cursor_result.stderr)
+            self.assertEqual(cursor_result.stdout, "1\n")
+            self.assertEqual(
+                (root / "cursor-written.env").read_text(encoding="ascii"),
+                "MSYS_GENERATION=9\nCH347_CURSOR=1\n",
+            )
+            for document in (
+                "CH347_CURSOR=true\n",
+                "CH347_CURSOR=0\nCH347_CURSOR=1\n",
+                "MSYS_GENERATION=9\nCH347_CURSOR=1\n",
+                "UNKNOWN=1\n",
+            ):
+                cursor.write_text(document, encoding="ascii")
+                rejected_cursor = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f'. "{DISPLAY_CONFIG}"; '
+                        f'ch347_read_cursor_config "{cursor}"',
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5,
+                )
+                self.assertNotEqual(rejected_cursor.returncode, 0, document)
+
     def test_long_480m_wait_failure_exports_one_degraded_edge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -716,8 +757,8 @@ printf '  depth of root window:    24 planes\\n'
                 """#!/bin/bash
 set -euo pipefail
 mkdir -p "$RUN_DIR"
-printf 'DEBUG=%s\nFPS=%s\nXCAP_MAX_FPS=%s\nXCAP_IDLE_FPS=%s\n' \
-    "$DEBUG" "$FPS" "$XCAP_MAX_FPS" "$XCAP_IDLE_FPS" \
+printf 'DEBUG=%s\nFPS=%s\nXCAP_MAX_FPS=%s\nXCAP_IDLE_FPS=%s\nCH347_CURSOR=%s\n' \
+    "$DEBUG" "$FPS" "$XCAP_MAX_FPS" "$XCAP_IDLE_FPS" "$CH347_CURSOR" \
     >"$RUN_DIR/config.$MSYS_GENERATION"
 nohup sleep 60 >/dev/null 2>&1 &
 child=$!
@@ -813,8 +854,13 @@ exec bash "{PROVIDER}"
                     .startswith("MSYS_GENERATION=1\n")
                 )
                 self.assertEqual(
+                    (run_dir / "cursor.applied.env").read_text(encoding="ascii"),
+                    "MSYS_GENERATION=1\nCH347_CURSOR=0\n",
+                )
+                self.assertEqual(
                     (run_dir / "config.1").read_text(encoding="ascii"),
-                    "DEBUG=0\nFPS=60\nXCAP_MAX_FPS=60\nXCAP_IDLE_FPS=0\n",
+                    "DEBUG=0\nFPS=60\nXCAP_MAX_FPS=60\nXCAP_IDLE_FPS=0\n"
+                    "CH347_CURSOR=0\n",
                 )
                 self.assertEqual(
                     (state_root / "ch347" / "fps.env").read_text(encoding="ascii"),
@@ -823,6 +869,10 @@ exec bash "{PROVIDER}"
 
                 (state_root / "ch347" / "fps.env").write_text(
                     "DEBUG=1\nFPS=75\nXCAP_MAX_FPS=75\nXCAP_IDLE_FPS=0\n",
+                    encoding="ascii",
+                )
+                (state_root / "ch347" / "cursor.env").write_text(
+                    "CH347_CURSOR=1\n",
                     encoding="ascii",
                 )
 
@@ -852,6 +902,15 @@ exec bash "{PROVIDER}"
                     "FPS=75\n"
                     "XCAP_MAX_FPS=75\n"
                     "XCAP_IDLE_FPS=0\n",
+                )
+                self.assertEqual(
+                    (run_dir / "cursor.applied.env").read_text(encoding="ascii"),
+                    "MSYS_GENERATION=2\nCH347_CURSOR=1\n",
+                )
+                self.assertTrue(
+                    (run_dir / "config.2")
+                    .read_text(encoding="ascii")
+                    .endswith("CH347_CURSOR=1\n")
                 )
                 live_log = run_dir / "live.log"
                 live_log.write_bytes(b"x" * 2048)

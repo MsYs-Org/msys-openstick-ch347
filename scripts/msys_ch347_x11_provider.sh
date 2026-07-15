@@ -27,6 +27,7 @@ LINK_STATE_FILE="${CH347_LINK_STATE_FILE:-$RUN_DIR/ch347-link-state.env}"
 export CH347_LINK_STATE_FILE="$LINK_STATE_FILE"
 APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-$RUN_DIR/display-config.applied.env}"
 APPLIED_OVERLAY_FILE="${MSYS_CH347_APPLIED_OVERLAY_FILE:-$RUN_DIR/debug-overlay.applied.env}"
+APPLIED_CURSOR_FILE="${MSYS_CH347_APPLIED_CURSOR_FILE:-$RUN_DIR/cursor.applied.env}"
 READY_FILE="${MSYS_X11_READY_FILE:-$RUN_DIR/msys.ready}"
 if [ -n "${MSYS_DISPLAY_SESSION_STATE_FILE:-}" ]; then
     SESSION_STATE_FILE="$MSYS_DISPLAY_SESSION_STATE_FILE"
@@ -162,6 +163,12 @@ prepare_mutable_config()
         atomic_seed_file "$source" "$target" || return 1
         export CH347_DEBUG_OVERLAY_FILE="$target"
     fi
+    if [ -z "${CH347_CURSOR_FILE:-}" ]; then
+        source="$X11DISPLAY_ROOT/ch347/cursor.env"
+        target="$state_root/ch347/cursor.env"
+        atomic_seed_file "$source" "$target" || return 1
+        export CH347_CURSOR_FILE="$target"
+    fi
     if [ -z "${CH347_TOUCH_CAL_FILE:-}" ]; then
         source="$X11DISPLAY_ROOT/ch347/touch_calibration.env"
         target="$state_root/ch347/touch_calibration.env"
@@ -288,6 +295,18 @@ load_debug_overlay_config()
     echo "msys-ch347-provider: overlay enabled=$CH347_DEBUG_OVERLAY alpha=$CH347_DEBUG_OVERLAY_ALPHA scale=$CH347_DEBUG_OVERLAY_SCALE items=$CH347_DEBUG_OVERLAY_ITEMS interval_ms=$CH347_DEBUG_OVERLAY_INTERVAL_MS"
 }
 
+load_cursor_config()
+{
+    local config="${CH347_CURSOR_FILE:-$X11DISPLAY_ROOT/ch347/cursor.env}"
+
+    ch347_read_cursor_config "$config" || {
+        echo "msys-ch347-provider: invalid cursor config: $config" >&2
+        return 1
+    }
+    export CH347_CURSOR="$CH347_CONFIG_CURSOR_ENABLED"
+    echo "msys-ch347-provider: touch cursor=$CH347_CURSOR"
+}
+
 publish_applied_display_config()
 {
     local generation="${MSYS_GENERATION:-0}"
@@ -298,6 +317,8 @@ publish_applied_display_config()
         "$CH347_CONFIG_OVERLAY_ENABLED" "$CH347_CONFIG_OVERLAY_ALPHA" \
         "$CH347_CONFIG_OVERLAY_SCALE" "$CH347_CONFIG_OVERLAY_ITEMS" \
         "$CH347_CONFIG_OVERLAY_INTERVAL_MS" "$generation"
+    ch347_write_cursor_config "$APPLIED_CURSOR_FILE" \
+        "$CH347_CONFIG_CURSOR_ENABLED" "$generation"
 }
 
 bound_live_log()
@@ -603,7 +624,8 @@ cleanup()
         if owns_session_state; then
             rm -f "$SESSION_STATE_FILE" "$SESSION_OWNER_FILE"
         fi
-        rm -f "$READY_FILE" "$OWNER_FILE" "$APPLIED_CONFIG_FILE" "$LINK_STATE_FILE"
+        rm -f "$READY_FILE" "$OWNER_FILE" "$APPLIED_CONFIG_FILE" \
+            "$APPLIED_OVERLAY_FILE" "$APPLIED_CURSOR_FILE" "$LINK_STATE_FILE"
     else
         echo "msys-ch347-provider: ownership moved; leaving replacement stack running"
     fi
@@ -625,7 +647,8 @@ claim_ownership
 # READY_FILE is shared by all generations.  A process must own the stack
 # before removing its predecessor's readiness edge, and must never use this
 # globally replaceable file as proof that its own publish call succeeded.
-rm -f "$READY_FILE" "$APPLIED_CONFIG_FILE" "$APPLIED_OVERLAY_FILE"
+rm -f "$READY_FILE" "$APPLIED_CONFIG_FILE" "$APPLIED_OVERLAY_FILE" \
+    "$APPLIED_CURSOR_FILE"
 
 if [ -f "$PID_FILE" ]; then
     echo "msys-ch347-provider: stale or existing pid file found; stopping previous stack"
@@ -638,6 +661,7 @@ migrate_legacy_idle_capture_default
 migrate_legacy_debug_default
 load_display_config
 load_debug_overlay_config
+load_cursor_config
 load_display_rotation
 load_touch_calibration
 

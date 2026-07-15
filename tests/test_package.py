@@ -30,7 +30,7 @@ class OpenStickPackageTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project).group(1)
         self.assertEqual(package["id"], "org.msys.openstick.ch347")
-        self.assertEqual(package["version"], "0.1.20")
+        self.assertEqual(package["version"], "0.1.21")
         self.assertEqual(package["version"], version)
         self.assertEqual(component["id"], "x11-spi-touch-output")
         self.assertEqual(component["readiness"]["mode"], "x11-display")
@@ -75,6 +75,7 @@ class OpenStickPackageTests(unittest.TestCase):
             "files/x11display/ch347/libch347spi.so",
             "files/x11display/ch347/fps.env",
             "files/x11display/ch347/debug_overlay.env",
+            "files/x11display/ch347/cursor.env",
             "files/x11display/ch347/touch_calibration.env",
             "files/x11display/ch347/rotation.env",
             "files/x11display/xorg/xorg.conf",
@@ -142,6 +143,7 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertIn("MSYS_APP_STATE_DIR", provider)
         self.assertIn('export CH347_FPS_FILE="$target"', provider)
         self.assertIn('export CH347_DEBUG_OVERLAY_FILE="$target"', provider)
+        self.assertIn('export CH347_CURSOR_FILE="$target"', provider)
         self.assertIn('export CH347_TOUCH_CAL_FILE="$target"', provider)
         self.assertIn('export CH347_ROTATION_FILE="$target"', provider)
         self.assertIn("$X11DISPLAY_ROOT/scripts/start_ch347_dirty_usb_x11.sh", provider)
@@ -189,6 +191,8 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertIn("ch347_read_display_config", provider)
         self.assertIn("publish_applied_display_config", provider)
         self.assertIn("ch347_write_debug_overlay_config", provider)
+        self.assertIn("ch347_write_cursor_config", provider)
+        self.assertIn("load_cursor_config", provider)
         self.assertIn('CH347_DEBUG_OVERLAY="${CH347_DEBUG_OVERLAY:-0}"', start)
         self.assertIn('CH347_DEBUG_OVERLAY="${CH347_DEBUG_OVERLAY:-0}"', daemon)
         self.assertIn("if owns_stack; then", daemon)
