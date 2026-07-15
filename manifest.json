@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.openstick.ch347",
     "name": "OpenStick CH347 X11 Display",
-    "version": "0.1.17",
+    "version": "0.1.18",
     "kind": "driver",
     "vendor": "MSYS",
     "summary": "Self-contained aarch64 CH347/ST7796 X11 display and touch provider"
@@ -22,6 +22,11 @@
       "env": {
         "CH347_TOUCH": "1",
         "DEBUG": "0",
+        "CH347_DEBUG_OVERLAY": "0",
+        "CH347_DEBUG_OVERLAY_ALPHA": "176",
+        "CH347_DEBUG_OVERLAY_SCALE": "1",
+        "CH347_DEBUG_OVERLAY_ITEMS": "fps,dirty,bytes",
+        "CH347_DEBUG_OVERLAY_INTERVAL_MS": "1000",
         "FPS": "60",
         "XCAP_MAX_FPS": "60",
         "XCAP_IDLE_FPS": "0",

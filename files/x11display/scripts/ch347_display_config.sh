@@ -177,3 +177,110 @@ ch347_write_display_config()
         trap - EXIT HUP INT TERM
     )
 }
+
+ch347_read_debug_overlay_config()
+{
+    local config="$1"
+    local line value
+    local seen_enabled=0 seen_alpha=0 seen_scale=0 seen_items=0 seen_interval=0
+
+    CH347_CONFIG_OVERLAY_ENABLED=0
+    CH347_CONFIG_OVERLAY_ALPHA=176
+    CH347_CONFIG_OVERLAY_SCALE=1
+    CH347_CONFIG_OVERLAY_ITEMS=7
+    CH347_CONFIG_OVERLAY_INTERVAL_MS=1000
+    [ ! -L "$config" ] && [ -f "$config" ] || return 1
+    value=$(wc -c < "$config") || return 1
+    case "$value" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$value" -le 4096 ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) continue ;;
+            CH347_DEBUG_OVERLAY=*)
+                [ "$seen_enabled" = 0 ] || return 1
+                value="${line#CH347_DEBUG_OVERLAY=}"
+                [ "$value" = 0 ] || [ "$value" = 1 ] || return 1
+                CH347_CONFIG_OVERLAY_ENABLED="$value"; seen_enabled=1 ;;
+            CH347_DEBUG_OVERLAY_ALPHA=*)
+                [ "$seen_alpha" = 0 ] || return 1
+                value="${line#CH347_DEBUG_OVERLAY_ALPHA=}"
+                ch347_config_uint "$value" 0 255 || return 1
+                CH347_CONFIG_OVERLAY_ALPHA="$((10#$value))"; seen_alpha=1 ;;
+            CH347_DEBUG_OVERLAY_SCALE=*)
+                [ "$seen_scale" = 0 ] || return 1
+                value="${line#CH347_DEBUG_OVERLAY_SCALE=}"
+                ch347_config_uint "$value" 1 2 || return 1
+                CH347_CONFIG_OVERLAY_SCALE="$((10#$value))"; seen_scale=1 ;;
+            CH347_DEBUG_OVERLAY_ITEMS=*)
+                [ "$seen_items" = 0 ] || return 1
+                value="${line#CH347_DEBUG_OVERLAY_ITEMS=}"
+                ch347_config_uint "$value" 1 31 || return 1
+                CH347_CONFIG_OVERLAY_ITEMS="$((10#$value))"; seen_items=1 ;;
+            CH347_DEBUG_OVERLAY_INTERVAL_MS=*)
+                [ "$seen_interval" = 0 ] || return 1
+                value="${line#CH347_DEBUG_OVERLAY_INTERVAL_MS=}"
+                case "$value" in ''|*[!0-9]*) return 1 ;; esac
+                [ "${#value}" -le 4 ] || return 1
+                value=$((10#$value))
+                [ "$value" -ge 250 ] && [ "$value" -le 5000 ] || return 1
+                CH347_CONFIG_OVERLAY_INTERVAL_MS="$value"; seen_interval=1 ;;
+            *) return 1 ;;
+        esac
+    done < "$config"
+    [ "$seen_enabled$seen_alpha$seen_scale$seen_items$seen_interval" = 11111 ]
+    export CH347_CONFIG_OVERLAY_ENABLED CH347_CONFIG_OVERLAY_ALPHA \
+        CH347_CONFIG_OVERLAY_SCALE CH347_CONFIG_OVERLAY_ITEMS \
+        CH347_CONFIG_OVERLAY_INTERVAL_MS
+}
+
+ch347_write_debug_overlay_config()
+{
+    local target="$1" enabled="$2" alpha="$3" scale="$4" items="$5"
+    local interval="$6" generation="${7:-}" directory tmp
+
+    [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || return 1
+    ch347_config_uint "$alpha" 0 255 || return 1
+    ch347_config_uint "$scale" 1 2 || return 1
+    ch347_config_uint "$items" 1 31 || return 1
+    case "$interval" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#interval}" -le 4 ] || return 1
+    interval=$((10#$interval))
+    [ "$interval" -ge 250 ] && [ "$interval" -le 5000 ] || return 1
+    if [ -n "$generation" ]; then
+        case "$generation" in ''|*[!0-9]*) return 1 ;; esac
+        [ "${#generation}" -le 10 ] || return 1
+    fi
+    if { [ -e "$target" ] || [ -L "$target" ]; } &&
+            { [ -L "$target" ] || [ ! -f "$target" ]; }; then return 1; fi
+    directory="$(dirname -- "$target")"
+    mkdir -p "$directory"
+    [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+    tmp=$(mktemp "$directory/.ch347-debug-overlay.XXXXXX") || return 1
+    (
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        {
+            [ -z "$generation" ] || printf 'MSYS_GENERATION=%s\n' "$generation"
+            printf 'CH347_DEBUG_OVERLAY=%s\n' "$enabled"
+            printf 'CH347_DEBUG_OVERLAY_ALPHA=%s\n' "$alpha"
+            printf 'CH347_DEBUG_OVERLAY_SCALE=%s\n' "$scale"
+            printf 'CH347_DEBUG_OVERLAY_ITEMS=%s\n' "$items"
+            printf 'CH347_DEBUG_OVERLAY_INTERVAL_MS=%s\n' "$interval"
+        } > "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$target"
+        trap - EXIT HUP INT TERM
+    )
+}
+
+ch347_debug_overlay_items_text()
+{
+    local mask="$1" output="" item bit
+    for item in fps dirty bytes bbox memory; do
+        case "$item" in fps) bit=1;; dirty) bit=2;; bytes) bit=4;; bbox) bit=8;; memory) bit=16;; esac
+        if [ $((mask & bit)) -ne 0 ]; then
+            [ -z "$output" ] || output="$output,"
+            output="$output$item"
+        fi
+    done
+    printf '%s\n' "$output"
+}

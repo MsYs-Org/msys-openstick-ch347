@@ -155,6 +155,52 @@ test "$(cat "$target")" = $'DEBUG=1\\nFPS=90\\nXCAP_MAX_FPS=90\\nXCAP_IDLE_FPS=0
             )
             self.assertEqual(safely_written.returncode, 0, safely_written.stderr)
 
+            overlay = root / "overlay.env"
+            overlay.write_text(
+                "CH347_DEBUG_OVERLAY=1\n"
+                "CH347_DEBUG_OVERLAY_ALPHA=128\n"
+                "CH347_DEBUG_OVERLAY_SCALE=1\n"
+                "CH347_DEBUG_OVERLAY_ITEMS=25\n"
+                "CH347_DEBUG_OVERLAY_INTERVAL_MS=750\n",
+                encoding="ascii",
+            )
+            overlay_command = (
+                f'. "{DISPLAY_CONFIG}"; '
+                f'ch347_read_debug_overlay_config "{overlay}"; '
+                "printf '%s/%s/%s/%s/%s\\n' \"$CH347_CONFIG_OVERLAY_ENABLED\" "
+                '"$CH347_CONFIG_OVERLAY_ALPHA" "$CH347_CONFIG_OVERLAY_SCALE" '
+                '"$CH347_CONFIG_OVERLAY_ITEMS" "$CH347_CONFIG_OVERLAY_INTERVAL_MS"'
+            )
+            overlay_result = subprocess.run(
+                ["bash", "-c", overlay_command],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            self.assertEqual(overlay_result.returncode, 0, overlay_result.stderr)
+            self.assertEqual(overlay_result.stdout, "1/128/1/25/750\n")
+
+            overlay.write_text(
+                "CH347_DEBUG_OVERLAY=1\n"
+                "CH347_DEBUG_OVERLAY_ALPHA=256\n"
+                "CH347_DEBUG_OVERLAY_SCALE=1\n"
+                "CH347_DEBUG_OVERLAY_ITEMS=7\n"
+                "CH347_DEBUG_OVERLAY_INTERVAL_MS=1000\n",
+                encoding="ascii",
+            )
+            rejected_overlay = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. "{DISPLAY_CONFIG}"; ch347_read_debug_overlay_config "{overlay}"',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            self.assertNotEqual(rejected_overlay.returncode, 0)
+
     def test_long_480m_wait_failure_exports_one_degraded_edge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

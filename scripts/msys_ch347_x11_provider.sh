@@ -26,6 +26,7 @@ LOG_FILE="$RUN_DIR/live.log"
 LINK_STATE_FILE="${CH347_LINK_STATE_FILE:-$RUN_DIR/ch347-link-state.env}"
 export CH347_LINK_STATE_FILE="$LINK_STATE_FILE"
 APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-$RUN_DIR/display-config.applied.env}"
+APPLIED_OVERLAY_FILE="${MSYS_CH347_APPLIED_OVERLAY_FILE:-$RUN_DIR/debug-overlay.applied.env}"
 READY_FILE="${MSYS_X11_READY_FILE:-$RUN_DIR/msys.ready}"
 if [ -n "${MSYS_DISPLAY_SESSION_STATE_FILE:-}" ]; then
     SESSION_STATE_FILE="$MSYS_DISPLAY_SESSION_STATE_FILE"
@@ -155,6 +156,12 @@ prepare_mutable_config()
         atomic_seed_file "$source" "$target" || return 1
         export CH347_FPS_FILE="$target"
     fi
+    if [ -z "${CH347_DEBUG_OVERLAY_FILE:-}" ]; then
+        source="$X11DISPLAY_ROOT/ch347/debug_overlay.env"
+        target="$state_root/ch347/debug_overlay.env"
+        atomic_seed_file "$source" "$target" || return 1
+        export CH347_DEBUG_OVERLAY_FILE="$target"
+    fi
     if [ -z "${CH347_TOUCH_CAL_FILE:-}" ]; then
         source="$X11DISPLAY_ROOT/ch347/touch_calibration.env"
         target="$state_root/ch347/touch_calibration.env"
@@ -252,12 +259,45 @@ load_display_config()
     echo "msys-ch347-provider: display config debug=$DEBUG fps=$FPS max_fps=$XCAP_MAX_FPS idle_fps=$XCAP_IDLE_FPS"
 }
 
+overlay_items_text()
+{
+    local mask="$1" output="" item bit
+    for item in fps dirty bytes bbox memory; do
+        case "$item" in fps) bit=1;; dirty) bit=2;; bytes) bit=4;; bbox) bit=8;; memory) bit=16;; esac
+        if [ $((mask & bit)) -ne 0 ]; then
+            [ -z "$output" ] || output="$output,"
+            output="$output$item"
+        fi
+    done
+    printf '%s\n' "$output"
+}
+
+load_debug_overlay_config()
+{
+    local config="${CH347_DEBUG_OVERLAY_FILE:-$X11DISPLAY_ROOT/ch347/debug_overlay.env}"
+    ch347_read_debug_overlay_config "$config" || {
+        echo "msys-ch347-provider: invalid debug overlay config: $config" >&2
+        return 1
+    }
+    export CH347_DEBUG_OVERLAY="$CH347_CONFIG_OVERLAY_ENABLED"
+    export CH347_DEBUG_OVERLAY_ALPHA="$CH347_CONFIG_OVERLAY_ALPHA"
+    export CH347_DEBUG_OVERLAY_SCALE="$CH347_CONFIG_OVERLAY_SCALE"
+    CH347_DEBUG_OVERLAY_ITEMS="$(overlay_items_text "$CH347_CONFIG_OVERLAY_ITEMS")"
+    export CH347_DEBUG_OVERLAY_ITEMS
+    export CH347_DEBUG_OVERLAY_INTERVAL_MS="$CH347_CONFIG_OVERLAY_INTERVAL_MS"
+    echo "msys-ch347-provider: overlay enabled=$CH347_DEBUG_OVERLAY alpha=$CH347_DEBUG_OVERLAY_ALPHA scale=$CH347_DEBUG_OVERLAY_SCALE items=$CH347_DEBUG_OVERLAY_ITEMS interval_ms=$CH347_DEBUG_OVERLAY_INTERVAL_MS"
+}
+
 publish_applied_display_config()
 {
     local generation="${MSYS_GENERATION:-0}"
 
     ch347_write_display_config "$APPLIED_CONFIG_FILE" "$DEBUG" "$FPS" \
         "$XCAP_MAX_FPS" "$XCAP_IDLE_FPS" "$generation"
+    ch347_write_debug_overlay_config "$APPLIED_OVERLAY_FILE" \
+        "$CH347_CONFIG_OVERLAY_ENABLED" "$CH347_CONFIG_OVERLAY_ALPHA" \
+        "$CH347_CONFIG_OVERLAY_SCALE" "$CH347_CONFIG_OVERLAY_ITEMS" \
+        "$CH347_CONFIG_OVERLAY_INTERVAL_MS" "$generation"
 }
 
 bound_live_log()
@@ -585,7 +625,7 @@ claim_ownership
 # READY_FILE is shared by all generations.  A process must own the stack
 # before removing its predecessor's readiness edge, and must never use this
 # globally replaceable file as proof that its own publish call succeeded.
-rm -f "$READY_FILE" "$APPLIED_CONFIG_FILE"
+rm -f "$READY_FILE" "$APPLIED_CONFIG_FILE" "$APPLIED_OVERLAY_FILE"
 
 if [ -f "$PID_FILE" ]; then
     echo "msys-ch347-provider: stale or existing pid file found; stopping previous stack"
@@ -597,6 +637,7 @@ prepare_mutable_config
 migrate_legacy_idle_capture_default
 migrate_legacy_debug_default
 load_display_config
+load_debug_overlay_config
 load_display_rotation
 load_touch_calibration
 

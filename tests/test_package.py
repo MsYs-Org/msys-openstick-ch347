@@ -30,12 +30,13 @@ class OpenStickPackageTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project).group(1)
         self.assertEqual(package["id"], "org.msys.openstick.ch347")
-        self.assertEqual(package["version"], "0.1.17")
+        self.assertEqual(package["version"], "0.1.18")
         self.assertEqual(package["version"], version)
         self.assertEqual(component["id"], "x11-spi-touch-output")
         self.assertEqual(component["readiness"]["mode"], "x11-display")
         self.assertEqual(component["env"]["DISPLAY_ID"], ":24")
         self.assertEqual(component["env"]["DEBUG"], "0")
+        self.assertEqual(component["env"]["CH347_DEBUG_OVERLAY"], "0")
         self.assertEqual(component["env"]["XCAP_IDLE_FPS"], "0")
         self.assertEqual(component["env"]["CH347_MAX_RECTS"], "1")
         self.assertIn(
@@ -73,6 +74,7 @@ class OpenStickPackageTests(unittest.TestCase):
             "files/x11display/scripts/ch347_dirty_usb_x11_daemon.sh",
             "files/x11display/ch347/libch347spi.so",
             "files/x11display/ch347/fps.env",
+            "files/x11display/ch347/debug_overlay.env",
             "files/x11display/ch347/touch_calibration.env",
             "files/x11display/ch347/rotation.env",
             "files/x11display/xorg/xorg.conf",
@@ -108,6 +110,8 @@ class OpenStickPackageTests(unittest.TestCase):
         ):
             with self.subTest(field=field):
                 self.assertIn(field, sink)
+        self.assertIn(b"CH347_DEBUG_OVERLAY", sink)
+        self.assertIn(b"SINK RSS:", sink)
 
     def test_capture_does_not_advertise_latest_frame_coalescing(self) -> None:
         capture = (
@@ -137,6 +141,7 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertIn("MSYS_PACKAGE_ROOT/files/x11display", provider)
         self.assertIn("MSYS_APP_STATE_DIR", provider)
         self.assertIn('export CH347_FPS_FILE="$target"', provider)
+        self.assertIn('export CH347_DEBUG_OVERLAY_FILE="$target"', provider)
         self.assertIn('export CH347_TOUCH_CAL_FILE="$target"', provider)
         self.assertIn('export CH347_ROTATION_FILE="$target"', provider)
         self.assertIn("$X11DISPLAY_ROOT/scripts/start_ch347_dirty_usb_x11.sh", provider)
@@ -180,6 +185,9 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertNotIn('dirty_usb_x11_restart_x', daemon)
         self.assertIn("ch347_read_display_config", provider)
         self.assertIn("publish_applied_display_config", provider)
+        self.assertIn("ch347_write_debug_overlay_config", provider)
+        self.assertIn('CH347_DEBUG_OVERLAY="${CH347_DEBUG_OVERLAY:-0}"', start)
+        self.assertIn('CH347_DEBUG_OVERLAY="${CH347_DEBUG_OVERLAY:-0}"', daemon)
         self.assertIn("if owns_stack; then", daemon)
         self.assertIn("shared state preserved", daemon)
         self.assertIn("publish_ch347_link_state degraded", daemon)

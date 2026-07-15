@@ -80,6 +80,12 @@ Version 0.1.17 makes the effective dirty policy explicit in diagnostics. With
 the stable `max_rects=1, stale_ms=0` profile, the direct single-bbox path is in
 use and the configured 40% fallback is reported as inactive.
 
+Version 0.1.18 separates detailed sink logging from the optional on-panel
+diagnostic overlay. The overlay is off by default and has independent alpha,
+compact font scale, selected metric rows, and a bounded sample interval. It
+uses the existing single bounding-box renderer without changing its damage
+selection policy.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same
