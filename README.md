@@ -53,11 +53,17 @@ The stable SPI policy uses one merged dirty bounding box
 the manifest, vendor defaults, and both launcher layers do not silently enable
 the slow multi-rectangle path.
 
-Version 0.1.12 keeps that stable policy unchanged and adds low-frequency
+Version 0.1.13 keeps that stable policy unchanged and adds low-frequency
 `dirty_stats` records from the sink.  They distinguish exact transmitted
 pixels, zero-damage passes, large refreshes, and true full-panel refreshes even
 when the visible debug overlay is disabled.  This lets Settings and one-pass
 acceptance inspect SPI behaviour without creating extra display damage.
+
+A CH347 interface enumerated at 12M is treated as a loose/degraded physical
+link, never as a usable display transport.  Recovery now issues a device-only
+`USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same
+interface to return at 480M, and leaves Xorg `:24` plus its applications alive
+throughout the transport repair.
 
 CH347 cable/USB loss is isolated from the X11 session. The detached daemon
 keeps the original Xorg `:24` process and all connected applications alive,

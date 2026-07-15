@@ -53,6 +53,7 @@ CH347_RESTART_DELAY_SEC="${CH347_RESTART_DELAY_SEC:-2}"
 # session fault.  Zero means retry for as long as the existing X session is
 # healthy.  A positive value remains available for bounded bench tests.
 CH347_RESTART_MAX="${CH347_RESTART_MAX:-0}"
+CH347_FORCE_RECONNECT="${CH347_FORCE_RECONNECT:-1}"
 X_SESSION_FATAL_RC="${CH347_X_SESSION_FATAL_RC:-70}"
 X_SESSION_PROBES="${CH347_X_SESSION_PROBES:-3}"
 CH347_TOUCH="${CH347_TOUCH:-0}"
@@ -165,9 +166,52 @@ discover_ch347()
     return 1
 }
 
+force_ch347_reconnect()
+{
+    local bus
+    local dev
+    local usb_dev
+    local device_id
+    local authorized
+
+    [ "$CH347_FORCE_RECONNECT" = "1" ] || return 1
+    if [ ! -r "$USB_SYS/busnum" ] || [ ! -r "$USB_SYS/devnum" ]; then
+        discover_ch347 || return 1
+    fi
+    [ -r "$USB_SYS/busnum" ] && [ -r "$USB_SYS/devnum" ] || return 1
+    bus="$(cat "$USB_SYS/busnum")"
+    dev="$(cat "$USB_SYS/devnum")"
+    usb_dev="$(printf '/dev/bus/usb/%03d/%03d' "$bus" "$dev")"
+    device_id="$(basename "$USB_SYS")"
+    echo "dirty_usb_x11_transport_reset begin device=$device_id usb=$usb_dev" >>"$LOG_FILE"
+    if "$CH347_SINK" --usb-reset "$usb_dev" >>"$LOG_FILE" 2>&1; then
+        echo "dirty_usb_x11_transport_reset complete method=usbdevfs device=$device_id" >>"$LOG_FILE"
+        sleep 0.5
+        return 0
+    fi
+
+    # Compatibility fallback for an older helper or a controller which
+    # rejects USBDEVFS_RESET.  This never touches the parent hub, so the two
+    # USB storage devices on neighbouring ports remain mounted.
+    authorized="$USB_SYS/authorized"
+    if [ -w "$authorized" ]; then
+        printf '0' >"$authorized" 2>/dev/null || return 1
+        sleep 0.25
+        printf '1' >"$authorized" 2>/dev/null || return 1
+        echo "dirty_usb_x11_transport_reset complete method=authorize device=$device_id" >>"$LOG_FILE"
+        sleep 0.75
+        return 0
+    fi
+    echo "dirty_usb_x11_transport_reset failed device=$device_id" >>"$LOG_FILE"
+    return 1
+}
+
 wait_ch347_bound()
 {
     local tries=$((CH347_WAIT_SEC * 4))
+    local wrong_speed_checks=0
+    local reset_attempted=0
+    local binding
 
     if [ "$tries" -lt 4 ]; then
         tries=4
@@ -181,9 +225,23 @@ wait_ch347_bound()
             printf '%s' "$IFACE_ID" > /sys/bus/usb/drivers/ch34x_pis/bind 2>/dev/null || true
         fi
 
-        if [ -d "$USB_SYS" ] && [ -e "$CH347_DEVICE_NODE" ] &&
-                lsusb -t | grep 'ch34x_pis, 480M' >/dev/null; then
-            return 0
+        if [ -d "$USB_SYS" ] && [ -e "$CH347_DEVICE_NODE" ]; then
+            binding=$(lsusb -t 2>/dev/null |
+                grep 'If 4,.*Driver=ch34x_pis,' | head -n 1 || true)
+            case "$binding" in
+                *', 480M') return 0 ;;
+                '') wrong_speed_checks=0 ;;
+                *)
+                    wrong_speed_checks=$((wrong_speed_checks + 1))
+                    if [ "$wrong_speed_checks" -ge 4 ] &&
+                            [ "$reset_attempted" = "0" ]; then
+                        echo "CH347 bound below 480M; forcing device reconnect." >&2
+                        force_ch347_reconnect || true
+                        reset_attempted=1
+                        wrong_speed_checks=0
+                    fi
+                    ;;
+            esac
         fi
 
         sleep 0.25

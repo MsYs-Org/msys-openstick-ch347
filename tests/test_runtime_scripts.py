@@ -235,6 +235,7 @@ printf '  depth of root window:    24 planes\\n'
             sink_count = root / "sink-count"
             sink_active = root / "sink-active"
             capture_active = root / "capture-active"
+            usb_reset = root / "usb-reset"
 
             write_executable(
                 commands / "Xorg",
@@ -260,7 +261,11 @@ printf '  depth of root window:    24 planes\n'
             write_executable(commands / "xrandr", "#!/bin/sh\nexit 0\n")
             write_executable(
                 commands / "lsusb",
-                "#!/bin/sh\nprintf '    |__ Port 1: Dev 2, If 4, Class=Vendor Specific Class, Driver=ch34x_pis, 480M\\n'\n",
+                """#!/bin/sh
+speed=12M
+test ! -f "$FAKE_USB_RESET" || speed=480M
+printf '    |__ Port 1: Dev 2, If 4, Class=Vendor Specific Class, Driver=ch34x_pis, %s\\n' "$speed"
+""",
             )
             arm = root / "fake-arm"
             write_executable(arm, "#!/bin/sh\nexit 0\n")
@@ -277,6 +282,10 @@ while :; do sleep 1; done
             write_executable(
                 sink,
                 """#!/bin/bash
+if test "${1:-}" = "--usb-reset"; then
+    : >"$FAKE_USB_RESET"
+    exit 0
+fi
 count=0
 test ! -f "$FAKE_SINK_COUNT" || read -r count <"$FAKE_SINK_COUNT"
 count=$((count + 1))
@@ -335,6 +344,7 @@ while :; do sleep 1; done
                 "FAKE_SINK_COUNT": str(sink_count),
                 "FAKE_SINK_ACTIVE": str(sink_active),
                 "FAKE_CAPTURE_ACTIVE": str(capture_active),
+                "FAKE_USB_RESET": str(usb_reset),
             }
             process = subprocess.Popen(
                 ["bash", str(DAEMON)],
@@ -363,6 +373,7 @@ while :; do sleep 1; done
                         f"stdout:\n{output}\nlog:\n{log}"
                     )
                 self.assertIsNone(process.poll())
+                self.assertTrue(usb_reset.exists(), "12M transport was not reset")
                 x_pids = [int(value) for value in x_launches.read_text().splitlines()]
                 self.assertEqual(len(x_pids), 1)
                 spawned.update(x_pids)
