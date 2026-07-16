@@ -112,6 +112,21 @@ place; Xorg, Shell and application processes keep their PIDs. The stablev1
 single-bbox dirty renderer is unchanged. Its signal-safe child wait also keeps
 the daemon alive when Bash unsets the `wait -p` result during a control signal.
 
+Version 0.1.27 adds aggregate CPU usage to the optional debug overlay. The
+default item mask is `39` (`fps,dirty,bytes,cpu`), while masks through `63`
+select any combination of the six bounded rows. CPU sampling reuses the
+overlay interval and `/proc/stat`; it does not add another wake-up source or
+change the stable single-bbox dirty selector. Overlay config and item changes
+continue to reload through the existing provider/daemon/sink `SIGUSR1` chain
+without replacing Xorg or applications.
+
+The source snapshot for the 0.1.27 sink is retained under
+`files/x11display/src`. The shipped sink ELF must not be built on the Windows
+workstation: build commit `2be82eb` in the board's `/root/x11display`, verify
+the result is AArch64, then copy that exact target artifact into
+`files/x11display/bin` before building the MAF. Ordinary repository sync does
+not build this CH347 target binary.
+
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only
 `USBDEVFS_RESET` (with a bounded authorization fallback), waits for the same

@@ -160,7 +160,7 @@ test "$(cat "$target")" = $'DEBUG=1\\nFPS=90\\nXCAP_MAX_FPS=90\\nXCAP_IDLE_FPS=0
                 "CH347_DEBUG_OVERLAY=1\n"
                 "CH347_DEBUG_OVERLAY_ALPHA=128\n"
                 "CH347_DEBUG_OVERLAY_SCALE=1\n"
-                "CH347_DEBUG_OVERLAY_ITEMS=25\n"
+                "CH347_DEBUG_OVERLAY_ITEMS=63\n"
                 "CH347_DEBUG_OVERLAY_INTERVAL_MS=750\n",
                 encoding="ascii",
             )
@@ -179,7 +179,25 @@ test "$(cat "$target")" = $'DEBUG=1\\nFPS=90\\nXCAP_MAX_FPS=90\\nXCAP_IDLE_FPS=0
                 timeout=5,
             )
             self.assertEqual(overlay_result.returncode, 0, overlay_result.stderr)
-            self.assertEqual(overlay_result.stdout, "1/128/1/25/750\n")
+            self.assertEqual(overlay_result.stdout, "1/128/1/63/750\n")
+
+            items_result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. "{DISPLAY_CONFIG}"; '
+                    'ch347_debug_overlay_items_text 63',
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            self.assertEqual(items_result.returncode, 0, items_result.stderr)
+            self.assertEqual(
+                items_result.stdout,
+                "fps,dirty,bytes,bbox,memory,cpu\n",
+            )
 
             overlay.write_text(
                 "CH347_DEBUG_OVERLAY=1\n"
@@ -200,6 +218,27 @@ test "$(cat "$target")" = $'DEBUG=1\\nFPS=90\\nXCAP_MAX_FPS=90\\nXCAP_IDLE_FPS=0
                 timeout=5,
             )
             self.assertNotEqual(rejected_overlay.returncode, 0)
+
+            overlay.write_text(
+                "CH347_DEBUG_OVERLAY=1\n"
+                "CH347_DEBUG_OVERLAY_ALPHA=128\n"
+                "CH347_DEBUG_OVERLAY_SCALE=1\n"
+                "CH347_DEBUG_OVERLAY_ITEMS=64\n"
+                "CH347_DEBUG_OVERLAY_INTERVAL_MS=1000\n",
+                encoding="ascii",
+            )
+            overwide_mask = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. "{DISPLAY_CONFIG}"; '
+                    f'ch347_read_debug_overlay_config "{overlay}"',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            self.assertNotEqual(overwide_mask.returncode, 0)
 
             cursor = root / "cursor.env"
             cursor.write_text("CH347_CURSOR=1\n", encoding="ascii")
@@ -409,6 +448,16 @@ printf '    |__ Port 1: Dev 2, If 4, Class=Vendor Specific Class, Driver=ch34x_p
             rotation.write_text(
                 "CH347_DISPLAY_ROTATION=normal\n", encoding="ascii"
             )
+            overlay = root / "debug-overlay.env"
+            overlay.write_text(
+                "CH347_DEBUG_OVERLAY=1\n"
+                "CH347_DEBUG_OVERLAY_ALPHA=176\n"
+                "CH347_DEBUG_OVERLAY_SCALE=1\n"
+                "CH347_DEBUG_OVERLAY_ITEMS=39\n"
+                "CH347_DEBUG_OVERLAY_INTERVAL_MS=1000\n",
+                encoding="ascii",
+            )
+            applied_overlay = root / "debug-overlay.applied.env"
             capture = root / "fake-capture"
             write_executable(
                 capture,
@@ -489,6 +538,8 @@ while :; do sleep 1; done
                 "FAKE_CAPTURE_ACTIVE": str(capture_active),
                 "FAKE_USB_RESET": str(usb_reset),
                 "CH347_ROTATION_FILE": str(rotation),
+                "CH347_DEBUG_OVERLAY_FILE": str(overlay),
+                "MSYS_CH347_APPLIED_OVERLAY_FILE": str(applied_overlay),
                 "MSYS_CH347_APPLIED_ROTATION_FILE": str(
                     run_dir / "rotation.applied.env"
                 ),
@@ -535,6 +586,14 @@ while :; do sleep 1; done
                 # signal path, which previously tripped `set -u` here.
                 reload_capture = int(capture_active.read_text().strip())
                 reload_sink = int(sink_active.read_text().strip())
+                overlay.write_text(
+                    "CH347_DEBUG_OVERLAY=1\n"
+                    "CH347_DEBUG_OVERLAY_ALPHA=176\n"
+                    "CH347_DEBUG_OVERLAY_SCALE=1\n"
+                    "CH347_DEBUG_OVERLAY_ITEMS=63\n"
+                    "CH347_DEBUG_OVERLAY_INTERVAL_MS=1000\n",
+                    encoding="ascii",
+                )
                 os.kill(process.pid, signal.SIGUSR1)
                 wait_until(
                     lambda: "dirty_usb_x11_control_reload applied" in
@@ -549,6 +608,10 @@ while :; do sleep 1; done
                 )
                 self.assertEqual(int(sink_active.read_text().strip()), reload_sink)
                 self.assertEqual(len(x_launches.read_text().splitlines()), 1)
+                self.assertIn(
+                    "CH347_DEBUG_OVERLAY_ITEMS=63\n",
+                    applied_overlay.read_text(encoding="ascii"),
+                )
 
                 rotation.write_text(
                     "CH347_DISPLAY_ROTATION=right\n", encoding="ascii"

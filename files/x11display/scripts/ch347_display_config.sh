@@ -187,7 +187,7 @@ ch347_read_debug_overlay_config()
     CH347_CONFIG_OVERLAY_ENABLED=0
     CH347_CONFIG_OVERLAY_ALPHA=176
     CH347_CONFIG_OVERLAY_SCALE=1
-    CH347_CONFIG_OVERLAY_ITEMS=7
+    CH347_CONFIG_OVERLAY_ITEMS=39
     CH347_CONFIG_OVERLAY_INTERVAL_MS=1000
     [ ! -L "$config" ] && [ -f "$config" ] || return 1
     value=$(wc -c < "$config") || return 1
@@ -214,7 +214,7 @@ ch347_read_debug_overlay_config()
             CH347_DEBUG_OVERLAY_ITEMS=*)
                 [ "$seen_items" = 0 ] || return 1
                 value="${line#CH347_DEBUG_OVERLAY_ITEMS=}"
-                ch347_config_uint "$value" 1 31 || return 1
+                ch347_config_uint "$value" 1 63 || return 1
                 CH347_CONFIG_OVERLAY_ITEMS="$((10#$value))"; seen_items=1 ;;
             CH347_DEBUG_OVERLAY_INTERVAL_MS=*)
                 [ "$seen_interval" = 0 ] || return 1
@@ -241,7 +241,7 @@ ch347_write_debug_overlay_config()
     [ "$enabled" = 0 ] || [ "$enabled" = 1 ] || return 1
     ch347_config_uint "$alpha" 0 255 || return 1
     ch347_config_uint "$scale" 1 2 || return 1
-    ch347_config_uint "$items" 1 31 || return 1
+    ch347_config_uint "$items" 1 63 || return 1
     case "$interval" in ''|*[!0-9]*) return 1 ;; esac
     [ "${#interval}" -le 4 ] || return 1
     interval=$((10#$interval))
@@ -275,8 +275,8 @@ ch347_write_debug_overlay_config()
 ch347_debug_overlay_items_text()
 {
     local mask="$1" output="" item bit
-    for item in fps dirty bytes bbox memory; do
-        case "$item" in fps) bit=1;; dirty) bit=2;; bytes) bit=4;; bbox) bit=8;; memory) bit=16;; esac
+    for item in fps dirty bytes bbox memory cpu; do
+        case "$item" in fps) bit=1;; dirty) bit=2;; bytes) bit=4;; bbox) bit=8;; memory) bit=16;; cpu) bit=32;; esac
         if [ $((mask & bit)) -ne 0 ]; then
             [ -z "$output" ] || output="$output,"
             output="$output$item"

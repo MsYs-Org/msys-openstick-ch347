@@ -271,8 +271,8 @@ load_display_config()
 overlay_items_text()
 {
     local mask="$1" output="" item bit
-    for item in fps dirty bytes bbox memory; do
-        case "$item" in fps) bit=1;; dirty) bit=2;; bytes) bit=4;; bbox) bit=8;; memory) bit=16;; esac
+    for item in fps dirty bytes bbox memory cpu; do
+        case "$item" in fps) bit=1;; dirty) bit=2;; bytes) bit=4;; bbox) bit=8;; memory) bit=16;; cpu) bit=32;; esac
         if [ $((mask & bit)) -ne 0 ]; then
             [ -z "$output" ] || output="$output,"
             output="$output$item"

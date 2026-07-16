@@ -30,13 +30,17 @@ class OpenStickPackageTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project).group(1)
         self.assertEqual(package["id"], "org.msys.openstick.ch347")
-        self.assertEqual(package["version"], "0.1.26")
+        self.assertEqual(package["version"], "0.1.27")
         self.assertEqual(package["version"], version)
         self.assertEqual(component["id"], "x11-spi-touch-output")
         self.assertEqual(component["readiness"]["mode"], "x11-display")
         self.assertEqual(component["env"]["DISPLAY_ID"], ":24")
         self.assertEqual(component["env"]["DEBUG"], "0")
         self.assertEqual(component["env"]["CH347_DEBUG_OVERLAY"], "0")
+        self.assertEqual(
+            component["env"]["CH347_DEBUG_OVERLAY_ITEMS"],
+            "fps,dirty,bytes,cpu",
+        )
         self.assertEqual(component["env"]["XCAP_IDLE_FPS"], "0")
         self.assertEqual(component["env"]["CH347_MAX_RECTS"], "1")
         self.assertIn(
@@ -78,6 +82,7 @@ class OpenStickPackageTests(unittest.TestCase):
             "files/x11display/ch347/cursor.env",
             "files/x11display/ch347/touch_calibration.env",
             "files/x11display/ch347/rotation.env",
+            "files/x11display/src/ch347_dirty_usb_sink.c",
             "files/x11display/xorg/xorg.conf",
         )
         for relative in required:
@@ -128,6 +133,45 @@ class OpenStickPackageTests(unittest.TestCase):
 
         self.assertIn(b"full_pct=inactive(single-bbox)", sink)
         self.assertIn('CH347_FULL_AREA_POLICY="inactive-single-bbox"', daemon)
+
+        source = (
+            ROOT / "files/x11display/src/ch347_dirty_usb_sink.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'unsigned int max_rects = env_u32("CH347_MAX_RECTS", 1);',
+            source,
+        )
+        self.assertIn("if (max_rects == 1 && !stale_ms)", source)
+        self.assertIn("full_pct=inactive(single-bbox)", source)
+
+    def test_cpu_overlay_source_and_six_item_contract_are_bundled(self) -> None:
+        source = (
+            ROOT / "files/x11display/src/ch347_dirty_usb_sink.c"
+        ).read_text(encoding="utf-8")
+        provider = (
+            ROOT / "scripts/msys_ch347_x11_provider.sh"
+        ).read_text(encoding="utf-8")
+        overlay = (
+            ROOT / "files/x11display/ch347/debug_overlay.env"
+        ).read_text(encoding="ascii")
+        defaults = (
+            ROOT / "files/x11display/ch347/ch347_best_params.env"
+        ).read_text(encoding="ascii")
+
+        self.assertIn("#define DEBUG_OVERLAY_CPU (1u << 5)", source)
+        self.assertIn("DEBUG_OVERLAY_ALL_ITEMS ((1u << 6) - 1u)", source)
+        self.assertIn('overlay->cpu_stat_path = "/proc/stat";', source)
+        self.assertIn('"CPU:%.1f%%"', source)
+        self.assertIn(
+            '"CH347_DEBUG_OVERLAY_ITEMS", 1, 63,',
+            source,
+        )
+        self.assertIn("memory cpu; do", provider)
+        self.assertIn("cpu) bit=32", provider)
+        self.assertIn("CH347_DEBUG_OVERLAY_ITEMS=39", overlay)
+        self.assertIn(
+            "CH347_DEBUG_OVERLAY_ITEMS=fps,dirty,bytes,cpu", defaults
+        )
 
     def test_provider_prefers_package_root_and_x11display_is_relocatable(self) -> None:
         provider = (ROOT / "scripts/msys_ch347_x11_provider.sh").read_text(
