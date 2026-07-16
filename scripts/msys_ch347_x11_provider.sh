@@ -835,7 +835,10 @@ for _ in $(seq 1 80); do
             echo "msys-ch347-provider: touch setup failed" >&2
             exit 1
         fi
-        for _ in $(seq 1 80); do
+        # Xorg can be queryable while a physical CH347 is still being claimed
+        # and UHID touch is being created.  Keep the receipt generation check,
+        # but allow the real sink up to eight seconds to publish it.
+        for _ in $(seq 1 320); do
             touch_affine_receipt_matches && break
             sleep 0.025
         done

@@ -1,5 +1,13 @@
 # OpenStick CH347 display-output package
 
+Version 0.1.30 preserves executable modes for the three packaged AArch64
+helpers when the source is synchronized from Windows. A missing execute bit
+previously stopped before the sink could publish its affine receipt.
+
+Version 0.1.29 keeps the affine receipt generation check but allows a cold
+physical CH347/UHID start up to eight seconds to publish it. Xorg becoming
+queryable does not imply that USB claim and touch creation have completed.
+
 Version 0.1.28 adds generation-bound normalized touch-affine hot reload. The
 sink applies raw swap/minmax/invert, then the affine correction, then physical
 rotation, and writes a readback receipt before HAL can confirm a preview. X11,
