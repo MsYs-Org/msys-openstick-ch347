@@ -105,7 +105,7 @@ confuse a saved value with the value running in the sink. Older package
 versions safely ignore the extra state file and retain their cursor-off
 default during rollback.
 
-Version 0.1.25 applies FPS, sink logging, debug overlay, touch cursor and
+Version 0.1.26 applies FPS, sink logging, debug overlay, touch cursor and
 physical rotation through the active provider/daemon `SIGUSR1` chain. Rotation
 uses RandR on the existing `:24` root and reloads capture/touch mapping in
 place; Xorg, Shell and application processes keep their PIDs. The stablev1
