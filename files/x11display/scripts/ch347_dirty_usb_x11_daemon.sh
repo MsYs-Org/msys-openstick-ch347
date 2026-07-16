@@ -17,6 +17,7 @@ CH347_FPS_FILE="${CH347_FPS_FILE:-$XCAP_FPS_FILE}"
 CH347_DEBUG_OVERLAY_FILE="${CH347_DEBUG_OVERLAY_FILE:-$PROJECT_DIR/ch347/debug_overlay.env}"
 CH347_CURSOR_FILE="${CH347_CURSOR_FILE:-$PROJECT_DIR/ch347/cursor.env}"
 CH347_ROTATION_FILE="${CH347_ROTATION_FILE:-$PROJECT_DIR/ch347/rotation.env}"
+CH347_TOUCH_AFFINE_FILE="${CH347_TOUCH_AFFINE_FILE:-$PROJECT_DIR/ch347/touch_affine.env}"
 XCAP_NICE="${XCAP_NICE:--5}"
 CH347_SINK_NICE="${CH347_SINK_NICE:--5}"
 XVFB_NICE="${XVFB_NICE:-5}"
@@ -136,6 +137,7 @@ APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-}"
 APPLIED_OVERLAY_FILE="${MSYS_CH347_APPLIED_OVERLAY_FILE:-}"
 APPLIED_CURSOR_FILE="${MSYS_CH347_APPLIED_CURSOR_FILE:-}"
 APPLIED_ROTATION_FILE="${MSYS_CH347_APPLIED_ROTATION_FILE:-}"
+APPLIED_TOUCH_AFFINE_FILE="${MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE:-}"
 PROVIDER_GENERATION="${MSYS_GENERATION:-0}"
 mkdir -p "$RUN_DIR"
 if [ ! -f "$CH347_TOUCH_MODE_FILE" ]; then
@@ -453,6 +455,26 @@ publish_applied_runtime_config()
             "$DISPLAY_ROTATION" "$PROVIDER_GENERATION" || return 1
 }
 
+touch_affine_receipt_matches()
+{
+    local key configured
+
+    [ -z "$APPLIED_TOUCH_AFFINE_FILE" ] && return 0
+    [ -f "$CH347_TOUCH_AFFINE_FILE" ] &&
+        [ -f "$APPLIED_TOUCH_AFFINE_FILE" ] || return 1
+    grep -qx "MSYS_GENERATION=$PROVIDER_GENERATION" \
+        "$APPLIED_TOUCH_AFFINE_FILE" || return 1
+    for key in MSYS_TOUCH_AFFINE_REVISION \
+            CH347_TOUCH_AFFINE_00 CH347_TOUCH_AFFINE_01 \
+            CH347_TOUCH_AFFINE_02 CH347_TOUCH_AFFINE_10 \
+            CH347_TOUCH_AFFINE_11 CH347_TOUCH_AFFINE_12 \
+            CH347_TOUCH_AFFINE_20 CH347_TOUCH_AFFINE_21 \
+            CH347_TOUCH_AFFINE_22; do
+        configured=$(grep -m1 "^$key=" "$CH347_TOUCH_AFFINE_FILE") || return 1
+        grep -qx "$configured" "$APPLIED_TOUCH_AFFINE_FILE" || return 1
+    done
+}
+
 pause_capture_for_rotation()
 {
     local state=""
@@ -595,6 +617,17 @@ EOF
         [ -n "$STREAM_CAP_PID" ] && kill -USR1 "$STREAM_CAP_PID" 2>/dev/null || return 1
     fi
     [ -n "$STREAM_SINK_PID" ] && kill -USR1 "$STREAM_SINK_PID" 2>/dev/null || return 1
+    if [ -n "$APPLIED_TOUCH_AFFINE_FILE" ]; then
+        for _ in $(seq 1 80); do
+            touch_affine_receipt_matches && break
+            kill -0 "$STREAM_SINK_PID" 2>/dev/null || return 1
+            sleep 0.025
+        done
+        touch_affine_receipt_matches || {
+            echo "dirty_usb_x11_control_reload rejected=touch-affine-receipt" >>"$LOG_FILE"
+            return 1
+        }
+    fi
     publish_applied_runtime_config || {
         echo "dirty_usb_x11_control_reload rejected=receipt" >>"$LOG_FILE"
         return 1
@@ -777,6 +810,9 @@ run_stream_once()
               CH347_DEBUG_OVERLAY_FILE="$CH347_DEBUG_OVERLAY_FILE" \
               CH347_CURSOR_FILE="$CH347_CURSOR_FILE" \
               CH347_ROTATION_FILE="$CH347_ROTATION_FILE" \
+              CH347_TOUCH_AFFINE_FILE="$CH347_TOUCH_AFFINE_FILE" \
+              MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE="$APPLIED_TOUCH_AFFINE_FILE" \
+              MSYS_GENERATION="$PROVIDER_GENERATION" \
               CH347_DEBUG_OVERLAY="$CH347_DEBUG_OVERLAY" \
               CH347_DEBUG_OVERLAY_ALPHA="$CH347_DEBUG_OVERLAY_ALPHA" \
               CH347_DEBUG_OVERLAY_SCALE="$CH347_DEBUG_OVERLAY_SCALE" \
@@ -920,6 +956,9 @@ run_stream_once()
               CH347_TOUCH_Z_STRICT="$CH347_TOUCH_Z_STRICT" \
               CH347_TOUCH_DEBUG="$CH347_TOUCH_DEBUG" \
               CH347_TOUCH_DISABLE_ON_ERRORS="$CH347_TOUCH_DISABLE_ON_ERRORS" \
+              CH347_TOUCH_AFFINE_FILE="$CH347_TOUCH_AFFINE_FILE" \
+              MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE="$APPLIED_TOUCH_AFFINE_FILE" \
+              MSYS_GENERATION="$PROVIDER_GENERATION" \
               DISPLAY_ID="$DISPLAY_ID" \
               nice -n "$CH347_SINK_NICE" \
               "$CH347_SINK" "$DEPTH" "$MAX_FRAMES"

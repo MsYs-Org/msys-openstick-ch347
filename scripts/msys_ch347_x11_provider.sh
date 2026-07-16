@@ -29,6 +29,8 @@ APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-$RUN_DIR/display-config.a
 APPLIED_OVERLAY_FILE="${MSYS_CH347_APPLIED_OVERLAY_FILE:-$RUN_DIR/debug-overlay.applied.env}"
 APPLIED_CURSOR_FILE="${MSYS_CH347_APPLIED_CURSOR_FILE:-$RUN_DIR/cursor.applied.env}"
 APPLIED_ROTATION_FILE="${MSYS_CH347_APPLIED_ROTATION_FILE:-$RUN_DIR/rotation.applied.env}"
+APPLIED_TOUCH_AFFINE_FILE="${MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE:-$RUN_DIR/touch-affine.applied.env}"
+EFFECTIVE_TOUCH_AFFINE_FILE="$RUN_DIR/touch-affine.effective.env"
 READY_FILE="${MSYS_X11_READY_FILE:-$RUN_DIR/msys.ready}"
 if [ -n "${MSYS_DISPLAY_SESSION_STATE_FILE:-}" ]; then
     SESSION_STATE_FILE="$MSYS_DISPLAY_SESSION_STATE_FILE"
@@ -146,6 +148,30 @@ atomic_seed_file()
     )
 }
 
+atomic_replace_file()
+{
+    local source="$1"
+    local target="$2"
+    local directory
+    local tmp
+
+    [ -f "$source" ] && [ ! -L "$source" ] || return 1
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        [ -f "$target" ] && [ ! -L "$target" ] || return 1
+    fi
+    directory="$(dirname -- "$target")"
+    mkdir -p "$directory"
+    [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+    tmp=$(mktemp "$directory/.msys-ch347-affine.XXXXXX") || return 1
+    (
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        cp -- "$source" "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$target"
+        trap - EXIT HUP INT TERM
+    )
+}
+
 prepare_mutable_config()
 {
     local state_root="${MSYS_APP_STATE_DIR:-}"
@@ -183,6 +209,21 @@ prepare_mutable_config()
         atomic_seed_file "$source" "$target" || return 1
         export CH347_ROTATION_FILE="$target"
     fi
+    if [ -z "${CH347_TOUCH_AFFINE_STATE_FILE:-}" ]; then
+        source="$X11DISPLAY_ROOT/ch347/touch_affine.env"
+        target="$state_root/ch347/touch_affine.env"
+        atomic_seed_file "$source" "$target" || return 1
+        export CH347_TOUCH_AFFINE_STATE_FILE="$target"
+    fi
+}
+
+prepare_effective_touch_affine()
+{
+    local source="${CH347_TOUCH_AFFINE_STATE_FILE:-$X11DISPLAY_ROOT/ch347/touch_affine.env}"
+
+    atomic_replace_file "$source" "$EFFECTIVE_TOUCH_AFFINE_FILE" || return 1
+    export CH347_TOUCH_AFFINE_FILE="$EFFECTIVE_TOUCH_AFFINE_FILE"
+    export MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE="$APPLIED_TOUCH_AFFINE_FILE"
 }
 
 load_display_rotation()
@@ -325,6 +366,26 @@ publish_applied_display_config()
         "$CH347_DISPLAY_ROTATION" "$generation"
 }
 
+touch_affine_receipt_matches()
+{
+    local generation="${MSYS_GENERATION:-0}"
+    local key configured
+
+    [ "${CH347_TOUCH:-0}" = 1 ] || return 0
+    [ -f "$CH347_TOUCH_AFFINE_FILE" ] &&
+        [ -f "$APPLIED_TOUCH_AFFINE_FILE" ] || return 1
+    grep -qx "MSYS_GENERATION=$generation" "$APPLIED_TOUCH_AFFINE_FILE" || return 1
+    for key in MSYS_TOUCH_AFFINE_REVISION \
+            CH347_TOUCH_AFFINE_00 CH347_TOUCH_AFFINE_01 \
+            CH347_TOUCH_AFFINE_02 CH347_TOUCH_AFFINE_10 \
+            CH347_TOUCH_AFFINE_11 CH347_TOUCH_AFFINE_12 \
+            CH347_TOUCH_AFFINE_20 CH347_TOUCH_AFFINE_21 \
+            CH347_TOUCH_AFFINE_22; do
+        configured=$(grep -m1 "^$key=" "$CH347_TOUCH_AFFINE_FILE") || return 1
+        grep -qx "$configured" "$APPLIED_TOUCH_AFFINE_FILE" || return 1
+    done
+}
+
 runtime_receipts_match()
 {
     local generation="${MSYS_GENERATION:-0}"
@@ -343,7 +404,8 @@ runtime_receipts_match()
         grep -qx "MSYS_GENERATION=$generation" "$APPLIED_CURSOR_FILE" 2>/dev/null &&
         grep -qx "CH347_CURSOR=$CH347_CONFIG_CURSOR_ENABLED" "$APPLIED_CURSOR_FILE" 2>/dev/null &&
         grep -qx "MSYS_GENERATION=$generation" "$APPLIED_ROTATION_FILE" 2>/dev/null &&
-        grep -qx "CH347_DISPLAY_ROTATION=$CH347_DISPLAY_ROTATION" "$APPLIED_ROTATION_FILE" 2>/dev/null
+        grep -qx "CH347_DISPLAY_ROTATION=$CH347_DISPLAY_ROTATION" "$APPLIED_ROTATION_FILE" 2>/dev/null &&
+        touch_affine_receipt_matches
 }
 
 reload_runtime_config()
@@ -541,10 +603,13 @@ publish_display_state()
 
 display_signature()
 {
+    local x11_signature
+    local affine_revision
+
     # State-file replacement is observed as a layout event.  Probe X11 for
     # liveness, but publish only when layout-relevant geometry or effective
     # input routing changes rather than using the state document as a timer.
-    DISPLAY="${DISPLAY_ID:-${DISPLAY:-:24}}" xdpyinfo 2>/dev/null |
+    x11_signature=$(DISPLAY="${DISPLAY_ID:-${DISPLAY:-:24}}" xdpyinfo 2>/dev/null |
         awk '
             /^[[:space:]]*dimensions:[[:space:]]*[0-9]+x[0-9]+[[:space:]]+pixels/ { dimensions = $2 }
             /^[[:space:]]*depth of root window:[[:space:]]*[0-9]+[[:space:]]+planes/ { depth = $5 }
@@ -555,7 +620,10 @@ display_signature()
                 }
                 exit 1
             }
-        '
+        ') || return 1
+    affine_revision=$(grep -m1 '^MSYS_TOUCH_AFFINE_REVISION=' \
+        "$CH347_TOUCH_AFFINE_FILE" 2>/dev/null) || return 1
+    printf '%s/%s\n' "$x11_signature" "$affine_revision"
 }
 
 remember_published_display_state()
@@ -689,7 +757,8 @@ cleanup()
         fi
         rm -f "$READY_FILE" "$OWNER_FILE" "$APPLIED_CONFIG_FILE" \
             "$APPLIED_OVERLAY_FILE" "$APPLIED_CURSOR_FILE" \
-            "$APPLIED_ROTATION_FILE" "$LINK_STATE_FILE"
+            "$APPLIED_ROTATION_FILE" "$APPLIED_TOUCH_AFFINE_FILE" \
+            "$EFFECTIVE_TOUCH_AFFINE_FILE" "$LINK_STATE_FILE"
     else
         echo "msys-ch347-provider: ownership moved; leaving replacement stack running"
     fi
@@ -718,7 +787,8 @@ claim_ownership
 # before removing its predecessor's readiness edge, and must never use this
 # globally replaceable file as proof that its own publish call succeeded.
 rm -f "$READY_FILE" "$APPLIED_CONFIG_FILE" "$APPLIED_OVERLAY_FILE" \
-    "$APPLIED_CURSOR_FILE" "$APPLIED_ROTATION_FILE"
+    "$APPLIED_CURSOR_FILE" "$APPLIED_ROTATION_FILE" \
+    "$APPLIED_TOUCH_AFFINE_FILE"
 
 if [ -f "$PID_FILE" ]; then
     echo "msys-ch347-provider: stale or existing pid file found; stopping previous stack"
@@ -727,6 +797,7 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 prepare_mutable_config
+prepare_effective_touch_affine
 migrate_legacy_idle_capture_default
 migrate_legacy_debug_default
 load_display_config
@@ -739,6 +810,7 @@ export MSYS_CH347_APPLIED_CONFIG_FILE="$APPLIED_CONFIG_FILE"
 export MSYS_CH347_APPLIED_OVERLAY_FILE="$APPLIED_OVERLAY_FILE"
 export MSYS_CH347_APPLIED_CURSOR_FILE="$APPLIED_CURSOR_FILE"
 export MSYS_CH347_APPLIED_ROTATION_FILE="$APPLIED_ROTATION_FILE"
+export MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE="$APPLIED_TOUCH_AFFINE_FILE"
 
 if [ -x "$START_SCRIPT" ]; then
     if ! "$START_SCRIPT"; then
@@ -761,6 +833,15 @@ for _ in $(seq 1 80); do
         if ! configure_touch_fallback; then
             if superseded; then exit 0; fi
             echo "msys-ch347-provider: touch setup failed" >&2
+            exit 1
+        fi
+        for _ in $(seq 1 80); do
+            touch_affine_receipt_matches && break
+            sleep 0.025
+        done
+        if ! touch_affine_receipt_matches; then
+            if superseded; then exit 0; fi
+            echo "msys-ch347-provider: touch affine sink receipt unavailable" >&2
             exit 1
         fi
         # Publish the generation-bound tuning receipt before exposing the X11

@@ -3,7 +3,7 @@
   "package": {
     "id": "org.msys.openstick.ch347",
     "name": "OpenStick CH347 X11 Display",
-    "version": "0.1.27",
+    "version": "0.1.28",
     "kind": "driver",
     "vendor": "MSYS",
     "summary": "Self-contained aarch64 CH347/ST7796 X11 display and touch provider"
@@ -51,6 +51,7 @@
         {"role": "display-output", "exclusive": true, "priority": 100, "x-msys-contract": {"id": "org.msys.role.display-output.v1", "version": "1.0.0"}},
         {"capability": "display.spi.ch347.st7796", "exclusive": false},
         {"capability": "input.touch.ch347", "exclusive": false},
+        {"capability": "input.touch.affine-hot-reload", "exclusive": false},
         {"capability": "display.session.v1", "exclusive": false},
         {"capability": "display.rotation.physical", "exclusive": false},
         {"capability": "x11.display.:24", "exclusive": false}

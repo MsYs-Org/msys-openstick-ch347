@@ -30,7 +30,7 @@ class OpenStickPackageTests(unittest.TestCase):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         version = re.search(r'(?m)^version\s*=\s*"([^"]+)"', project).group(1)
         self.assertEqual(package["id"], "org.msys.openstick.ch347")
-        self.assertEqual(package["version"], "0.1.27")
+        self.assertEqual(package["version"], "0.1.28")
         self.assertEqual(package["version"], version)
         self.assertEqual(component["id"], "x11-spi-touch-output")
         self.assertEqual(component["readiness"]["mode"], "x11-display")
@@ -82,7 +82,9 @@ class OpenStickPackageTests(unittest.TestCase):
             "files/x11display/ch347/cursor.env",
             "files/x11display/ch347/touch_calibration.env",
             "files/x11display/ch347/rotation.env",
+            "files/x11display/ch347/touch_affine.env",
             "files/x11display/src/ch347_dirty_usb_sink.c",
+            "files/x11display/src/touch_affine.h",
             "files/x11display/xorg/xorg.conf",
         )
         for relative in required:
@@ -118,6 +120,8 @@ class OpenStickPackageTests(unittest.TestCase):
                 self.assertIn(field, sink)
         self.assertIn(b"CH347_DEBUG_OVERLAY", sink)
         self.assertIn(b"SINK RSS:", sink)
+        self.assertIn(b"MSYS_TOUCH_AFFINE_REVISION", sink)
+        self.assertIn(b"touch_affine_revision=", sink)
 
     def test_capture_does_not_advertise_latest_frame_coalescing(self) -> None:
         capture = (
@@ -190,6 +194,8 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertIn('export CH347_CURSOR_FILE="$target"', provider)
         self.assertIn('export CH347_TOUCH_CAL_FILE="$target"', provider)
         self.assertIn('export CH347_ROTATION_FILE="$target"', provider)
+        self.assertIn('export CH347_TOUCH_AFFINE_STATE_FILE="$target"', provider)
+        self.assertIn('export CH347_TOUCH_AFFINE_FILE="$EFFECTIVE_TOUCH_AFFINE_FILE"', provider)
         self.assertIn("$X11DISPLAY_ROOT/scripts/start_ch347_dirty_usb_x11.sh", provider)
         self.assertIn('PROJECT_DIR="$(cd "$SCRIPT_DIR/.."', start)
         self.assertIn('PROJECT_DIR="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/.."', daemon)
@@ -244,6 +250,7 @@ class OpenStickPackageTests(unittest.TestCase):
         self.assertIn('xrandr --size "${new_width}x${new_height}"', daemon)
         self.assertIn('kill -USR1 "$STREAM_CAP_PID"', daemon)
         self.assertIn('kill -USR1 "$STREAM_SINK_PID"', daemon)
+        self.assertIn("touch_affine_receipt_matches", daemon)
         self.assertIn('if [ -n "${finished_pid:-}" ]', daemon)
         self.assertIn("pause_capture_for_rotation", daemon)
         self.assertIn("resume_capture_after_rotation 1", daemon)

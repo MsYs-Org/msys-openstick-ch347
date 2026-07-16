@@ -6,6 +6,7 @@
 #include <linux/usbdevice_fs.h>
 #include <linux/uhid.h>
 #include <linux/input.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #include <unistd.h>
 #include "frame_mailbox.h"
 #include "frame_rotation.h"
+#include "touch_affine.h"
 
 #define USB_DEV "/dev/bus/usb/001/003"
 #define USB_IFACE 4
@@ -259,6 +261,10 @@ struct touch_state {
     const char *display_name;
     const char *cal_file;
     const char *mode_file;
+    const char *affine_file;
+    const char *affine_receipt_file;
+    unsigned int provider_generation;
+    struct touch_affine affine;
     struct touch_uhid uhid;
     struct x11_touch_api x11;
 };
@@ -1190,6 +1196,31 @@ static void touch_map(const struct touch_state *ts, unsigned int raw_x,
         x = (long)(ts->width - 1) - x;
     if (ts->invert_y)
         y = (long)(ts->height - 1) - y;
+
+    /*
+     * Composition is deliberately stable and shared with display-session:
+     * raw sample -> swap -> min/max -> invert -> normalized affine.  Physical
+     * rotation is applied later, immediately before X11 injection.
+     */
+    {
+        double normalized_x = (double)x / (double)(ts->width - 1);
+        double normalized_y = (double)y / (double)(ts->height - 1);
+        double mapped_x;
+        double mapped_y;
+
+        touch_affine_apply(&ts->affine, normalized_x, normalized_y,
+                &mapped_x, &mapped_y);
+        if (mapped_x < 0.0)
+            mapped_x = 0.0;
+        if (mapped_x > 1.0)
+            mapped_x = 1.0;
+        if (mapped_y < 0.0)
+            mapped_y = 0.0;
+        if (mapped_y > 1.0)
+            mapped_y = 1.0;
+        x = (long)(mapped_x * (double)(ts->width - 1) + 0.5);
+        y = (long)(mapped_y * (double)(ts->height - 1) + 0.5);
+    }
 
     *out_x = (int)x;
     *out_y = (int)y;
@@ -2300,6 +2331,7 @@ struct sink_runtime_config {
     unsigned int overlay_scale;
     unsigned int overlay_items;
     unsigned int overlay_interval_ms;
+    struct touch_affine affine;
 };
 
 static int parse_uint_text(const char *text, unsigned int minimum,
@@ -2404,9 +2436,155 @@ static int read_rotation_assignment(const char *path,
     return 1;
 }
 
+static int parse_double_text(const char *text, double *value)
+{
+    char *end = NULL;
+    double parsed;
+
+    if (!text || !*text || !value)
+        return 0;
+    errno = 0;
+    parsed = strtod(text, &end);
+    if (errno || !end || (*end && *end != '\n' && *end != '\r') ||
+            !isfinite(parsed))
+        return 0;
+    *value = parsed;
+    return 1;
+}
+
+static int read_double_assignment(const char *path, const char *key,
+        double *value)
+{
+    FILE *stream;
+    char line[192];
+    size_t key_length;
+    int found = 0;
+    double selected = 0.0;
+
+    if (!path || !*path || !key || !*key || !value)
+        return 0;
+    stream = fopen(path, "r");
+    if (!stream)
+        return 0;
+    key_length = strlen(key);
+    while (fgets(line, sizeof(line), stream)) {
+        char *cursor = line;
+
+        while (*cursor == ' ' || *cursor == '\t')
+            cursor++;
+        if (!*cursor || *cursor == '\n' || *cursor == '#')
+            continue;
+        if (strncmp(cursor, key, key_length) != 0 ||
+                cursor[key_length] != '=')
+            continue;
+        if (found || !parse_double_text(cursor + key_length + 1u,
+                    &selected)) {
+            fclose(stream);
+            return 0;
+        }
+        found = 1;
+    }
+    if (ferror(stream)) {
+        fclose(stream);
+        return 0;
+    }
+    fclose(stream);
+    if (!found)
+        return 0;
+    *value = selected;
+    return 1;
+}
+
+static int touch_affine_load(const char *path, struct touch_affine *affine)
+{
+    static const char *keys[9] = {
+        "CH347_TOUCH_AFFINE_00", "CH347_TOUCH_AFFINE_01",
+        "CH347_TOUCH_AFFINE_02", "CH347_TOUCH_AFFINE_10",
+        "CH347_TOUCH_AFFINE_11", "CH347_TOUCH_AFFINE_12",
+        "CH347_TOUCH_AFFINE_20", "CH347_TOUCH_AFFINE_21",
+        "CH347_TOUCH_AFFINE_22",
+    };
+    struct touch_affine selected;
+
+    if (!path || !*path || !affine)
+        return 0;
+    touch_affine_identity(&selected);
+    if (!read_uint_assignment(path, "MSYS_TOUCH_AFFINE_REVISION", 0,
+                2147483647u, &selected.revision))
+        return 0;
+    for (unsigned int i = 0; i < 9; i++) {
+        if (!read_double_assignment(path, keys[i], &selected.value[i]))
+            return 0;
+    }
+    if (!touch_affine_valid(&selected))
+        return 0;
+    *affine = selected;
+    return 1;
+}
+
+static int touch_affine_equal(const struct touch_affine *left,
+        const struct touch_affine *right)
+{
+    if (left->revision != right->revision)
+        return 0;
+    for (unsigned int i = 0; i < 9; i++) {
+        if (fabs(left->value[i] - right->value[i]) > 1e-9)
+            return 0;
+    }
+    return 1;
+}
+
+static int touch_affine_write_receipt(const struct touch_state *touch)
+{
+    char temporary[PATH_MAX];
+    FILE *stream;
+    int fd;
+
+    if (!touch->affine_receipt_file || !*touch->affine_receipt_file)
+        return 1;
+    if (snprintf(temporary, sizeof(temporary), "%s.%ld.tmp",
+                touch->affine_receipt_file, (long)getpid()) >=
+            (int)sizeof(temporary))
+        return 0;
+    stream = fopen(temporary, "w");
+    if (!stream)
+        return 0;
+    fprintf(stream, "MSYS_GENERATION=%u\n", touch->provider_generation);
+    fprintf(stream, "MSYS_TOUCH_AFFINE_REVISION=%u\n",
+            touch->affine.revision);
+    fprintf(stream, "CH347_TOUCH_AFFINE_00=%.12g\n", touch->affine.value[0]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_01=%.12g\n", touch->affine.value[1]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_02=%.12g\n", touch->affine.value[2]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_10=%.12g\n", touch->affine.value[3]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_11=%.12g\n", touch->affine.value[4]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_12=%.12g\n", touch->affine.value[5]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_20=%.12g\n", touch->affine.value[6]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_21=%.12g\n", touch->affine.value[7]);
+    fprintf(stream, "CH347_TOUCH_AFFINE_22=%.12g\n", touch->affine.value[8]);
+    if (fflush(stream) != 0) {
+        fclose(stream);
+        unlink(temporary);
+        return 0;
+    }
+    fd = fileno(stream);
+    (void)fchmod(fd, 0600);
+    if (fsync(fd) != 0) {
+        fclose(stream);
+        unlink(temporary);
+        return 0;
+    }
+    if (fclose(stream) != 0 ||
+            rename(temporary, touch->affine_receipt_file) != 0) {
+        unlink(temporary);
+        return 0;
+    }
+    return 1;
+}
+
 static int sink_runtime_config_load(struct sink_runtime_config *config,
         const char *fps_path, const char *overlay_path,
-        const char *cursor_path, const char *rotation_path)
+        const char *cursor_path, const char *rotation_path,
+        const char *affine_path)
 {
     struct sink_runtime_config selected;
     unsigned int value;
@@ -2446,6 +2624,9 @@ static int sink_runtime_config_load(struct sink_runtime_config *config,
     }
     if (rotation_path && *rotation_path &&
             !read_rotation_assignment(rotation_path, &selected.rotation))
+        return 0;
+    if (affine_path && *affine_path &&
+            !touch_affine_load(affine_path, &selected.affine))
         return 0;
     *config = selected;
     return 1;
@@ -3461,6 +3642,7 @@ int main(int argc, char **argv)
     const char *overlay_file = getenv("CH347_DEBUG_OVERLAY_FILE");
     const char *cursor_file = getenv("CH347_CURSOR_FILE");
     const char *rotation_file = getenv("CH347_ROTATION_FILE");
+    const char *affine_file = getenv("CH347_TOUCH_AFFINE_FILE");
     int repeat_input = env_u32("CH347_REPEAT_INPUT", 0) != 0;
     int latest_only = env_u32("CH347_LATEST_ONLY", 1) != 0;
     struct touch_state touch;
@@ -3533,6 +3715,7 @@ int main(int argc, char **argv)
 
     memset(&touch, 0, sizeof(touch));
     touch.uhid.fd = -1;
+    touch_affine_identity(&touch.affine);
     memset(&gpio_overlay, 0, sizeof(gpio_overlay));
     gpio_overlay.enabled = env_u32("CH347_GPIO_OVERLAY", 0) != 0;
     gpio_overlay.poll_ms = env_u32("CH347_GPIO_OVERLAY_MS", 200);
@@ -3548,6 +3731,16 @@ int main(int argc, char **argv)
             TOUCH_MODE_TOUCH);
     touch.calibrate = env_u32("CH347_TOUCH_CALIBRATE", 0) != 0;
     touch.cal_exit = env_u32("CH347_TOUCH_CAL_EXIT", 1) != 0;
+    touch.affine_file = affine_file;
+    touch.affine_receipt_file =
+        getenv("MSYS_CH347_TOUCH_AFFINE_APPLIED_FILE");
+    touch.provider_generation = env_u32("MSYS_GENERATION", 0);
+    if (touch.affine_file && *touch.affine_file &&
+            !touch_affine_load(touch.affine_file, &touch.affine)) {
+        fprintf(stderr, "invalid touch affine config: %s\n",
+                touch.affine_file);
+        return 2;
+    }
     touch.swap_xy = env_u32("CH347_TOUCH_SWAP_XY", 0) != 0;
     touch.invert_x = env_u32("CH347_TOUCH_INVERT_X", 0) != 0;
     touch.invert_y = env_u32("CH347_TOUCH_INVERT_Y", 0) != 0;
@@ -3607,6 +3800,7 @@ int main(int argc, char **argv)
     runtime_config.overlay_scale = debug_overlay.scale;
     runtime_config.overlay_items = debug_overlay.items;
     runtime_config.overlay_interval_ms = debug_overlay.interval_ms;
+    runtime_config.affine = touch.affine;
     if (!touch.max_errors)
         touch.max_errors = 1;
     if (!touch.jump_thresh)
@@ -3718,6 +3912,11 @@ int main(int argc, char **argv)
                     touch.display_name);
             touch.enabled = 0;
         }
+    }
+    if (!touch_affine_write_receipt(&touch)) {
+        fprintf(stderr, "touch affine receipt write failed: %s\n",
+                touch.affine_receipt_file ? touch.affine_receipt_file : "");
+        return 2;
     }
 
     start = now_sec();
@@ -3845,23 +4044,28 @@ frame_loop:
 
             runtime_reload_requested = 0;
             if (!sink_runtime_config_load(&selected, fps_file, overlay_file,
-                        cursor_file, rotation_file)) {
+                        cursor_file, rotation_file, affine_file)) {
                 fprintf(stderr,
                         "dirty_usb_sink control_reload rejected invalid config\n");
             } else {
                 int rotation_changed = selected.rotation != touch.rotation;
+                int affine_changed = !touch_affine_equal(
+                        &selected.affine, &touch.affine);
 
-                if (rotation_changed) {
+                if (rotation_changed || affine_changed) {
                     if (touch.down)
                         touch_release(&touch);
                     touch.cursor_visible = 0;
+                    touch.filter_valid = 0;
+                    touch.raw_valid = 0;
+                }
+                if (rotation_changed) {
                     touch.rotation = selected.rotation;
                     frame_rotation_output_size(touch.rotation, touch.width,
                             touch.height, &touch.logical_width,
                             &touch.logical_height);
-                    touch.filter_valid = 0;
-                    touch.raw_valid = 0;
                 }
+                touch.affine = selected.affine;
                 debug = selected.debug;
                 touch.cursor_enabled = selected.cursor_enabled;
                 debug_overlay_configure(&debug_overlay,
@@ -3869,14 +4073,20 @@ frame_loop:
                         selected.overlay_scale, selected.overlay_items,
                         selected.overlay_interval_ms);
                 runtime_config = selected;
+                if (!touch_affine_write_receipt(&touch)) {
+                    fprintf(stderr,
+                            "dirty_usb_sink control_reload rejected affine receipt\n");
+                    continue;
+                }
                 control_changed = 1;
                 fprintf(stderr,
-                        "dirty_usb_sink control_reload debug_log=%d debug_overlay=%d overlay_alpha=%u overlay_scale=%u overlay_items=0x%x overlay_ms=%u cursor=%d rotation=%s logical=%ux%u\n",
+                        "dirty_usb_sink control_reload debug_log=%d debug_overlay=%d overlay_alpha=%u overlay_scale=%u overlay_items=0x%x overlay_ms=%u cursor=%d rotation=%s logical=%ux%u touch_affine_revision=%u\n",
                         debug, debug_overlay.enabled, debug_overlay.alpha,
                         debug_overlay.scale, debug_overlay.items,
                         debug_overlay.interval_ms, touch.cursor_enabled,
                         frame_rotation_name(touch.rotation),
-                        touch.logical_width, touch.logical_height);
+                        touch.logical_width, touch.logical_height,
+                        touch.affine.revision);
             }
         }
         if (mailbox_mode) {

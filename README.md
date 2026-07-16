@@ -1,5 +1,10 @@
 # OpenStick CH347 display-output package
 
+Version 0.1.28 adds generation-bound normalized touch-affine hot reload. The
+sink applies raw swap/minmax/invert, then the affine correction, then physical
+rotation, and writes a readback receipt before HAL can confirm a preview. X11,
+SPI streaming, Shell, and applications remain alive throughout calibration.
+
 `org.msys.openstick.ch347` is the installable owner of the OpenStick CH347 +
 ST7796 X11 output and XPT2046 touch pipeline. It preserves the development
 component identity `org.msys.openstick.ch347:x11-spi-touch-output`, so an

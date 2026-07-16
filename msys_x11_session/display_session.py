@@ -80,7 +80,11 @@ def parse_matrix(value: str | Sequence[Any]) -> tuple[float, ...]:
 
 
 def ch347_transform(env: Mapping[str, str]) -> tuple[float, ...]:
-    """Return the exact normalized affine transform used by the CH347 mapper."""
+    """Return the exact composed transform used by the CH347 mapper.
+
+    The sink applies raw min/max normalization, swap/invert, the writable
+    normalized affine correction, and finally physical-to-logical rotation.
+    """
 
     swap = _enabled(env.get("CH347_TOUCH_SWAP_XY"))
     invert_x = _enabled(env.get("CH347_TOUCH_INVERT_X"))
@@ -91,6 +95,7 @@ def ch347_transform(env: Mapping[str, str]) -> tuple[float, ...]:
         calibrated = (0.0, x_scale, x_offset, y_scale, 0.0, y_offset, 0.0, 0.0, 1.0)
     else:
         calibrated = (x_scale, 0.0, x_offset, 0.0, y_scale, y_offset, 0.0, 0.0, 1.0)
+    affine = ch347_affine(env)
     rotation = str(env.get("CH347_DISPLAY_ROTATION", "normal")).strip().lower()
     rotations = {
         "normal": (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -101,12 +106,57 @@ def ch347_transform(env: Mapping[str, str]) -> tuple[float, ...]:
     if rotation not in rotations:
         raise DisplaySessionError("unsupported CH347 display rotation")
     physical_to_logical = rotations[rotation]
+    corrected = _matrix_multiply(affine, calibrated)
+    return _matrix_multiply(physical_to_logical, corrected)
+
+
+def _matrix_multiply(left: Sequence[float], right: Sequence[float]) -> tuple[float, ...]:
     return tuple(
-        sum(physical_to_logical[row * 3 + item] * calibrated[item * 3 + column]
+        sum(left[row * 3 + item] * right[item * 3 + column]
             for item in range(3))
         for row in range(3)
         for column in range(3)
     )
+
+
+def ch347_affine(env: Mapping[str, str]) -> tuple[float, ...]:
+    path = str(env.get("CH347_TOUCH_AFFINE_FILE", "")).strip()
+    if not path:
+        return IDENTITY_MATRIX
+    try:
+        text = Path(path).read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        raise DisplaySessionError(f"cannot read CH347 touch affine state: {exc}") from exc
+    if len(text) > 16 * 1024 or "\x00" in text:
+        raise DisplaySessionError("CH347 touch affine state is oversized or binary")
+    keys = [
+        "CH347_TOUCH_AFFINE_00", "CH347_TOUCH_AFFINE_01", "CH347_TOUCH_AFFINE_02",
+        "CH347_TOUCH_AFFINE_10", "CH347_TOUCH_AFFINE_11", "CH347_TOUCH_AFFINE_12",
+        "CH347_TOUCH_AFFINE_20", "CH347_TOUCH_AFFINE_21", "CH347_TOUCH_AFFINE_22",
+    ]
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in keys:
+            if key in values:
+                raise DisplaySessionError("CH347 touch affine contains duplicate fields")
+            values[key] = value
+    if set(values) != set(keys):
+        raise DisplaySessionError("CH347 touch affine is incomplete")
+    matrix = parse_matrix([values[key] for key in keys])
+    if any(abs(matrix[index]) > 1e-9 for index in (6, 7)) or abs(matrix[8] - 1.0) > 1e-9:
+        raise DisplaySessionError("CH347 touch affine must have final row 0,0,1")
+    if any(abs(value) > 4.0 for value in matrix):
+        raise DisplaySessionError("CH347 touch affine is outside safe bounds")
+    for x, y in ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)):
+        mapped_x = matrix[0] * x + matrix[1] * y + matrix[2]
+        mapped_y = matrix[3] * x + matrix[4] * y + matrix[5]
+        if not (-1.0 <= mapped_x <= 2.0 and -1.0 <= mapped_y <= 2.0):
+            raise DisplaySessionError("CH347 touch affine maps outside safe bounds")
+    return matrix
 
 
 def parse_xinput_transform(text: str) -> tuple[float, ...]:
