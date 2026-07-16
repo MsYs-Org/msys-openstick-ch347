@@ -339,3 +339,61 @@ ch347_write_cursor_config()
         trap - EXIT HUP INT TERM
     )
 }
+
+ch347_read_rotation_config()
+{
+    local config="$1" line value seen=0 size
+
+    CH347_CONFIG_ROTATION=normal
+    [ ! -L "$config" ] && [ -f "$config" ] || return 1
+    size=$(wc -c < "$config") || return 1
+    case "$size" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$size" -le 256 ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) continue ;;
+            CH347_DISPLAY_ROTATION=*)
+                [ "$seen" = 0 ] || return 1
+                value="${line#CH347_DISPLAY_ROTATION=}"
+                case "$value" in
+                    normal|right|inverted|left) ;;
+                    *) return 1 ;;
+                esac
+                CH347_CONFIG_ROTATION="$value"
+                seen=1
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$config"
+    [ "$seen" = 1 ] || return 1
+    export CH347_CONFIG_ROTATION
+}
+
+ch347_write_rotation_config()
+{
+    local target="$1" rotation="$2" generation="${3:-}" directory tmp
+
+    case "$rotation" in normal|right|inverted|left) ;; *) return 1 ;; esac
+    if [ -n "$generation" ]; then
+        case "$generation" in ''|*[!0-9]*) return 1 ;; esac
+        [ "${#generation}" -le 10 ] || return 1
+        generation=$((10#$generation))
+        [ "$generation" -le 2147483647 ] || return 1
+    fi
+    if { [ -e "$target" ] || [ -L "$target" ]; } &&
+            { [ -L "$target" ] || [ ! -f "$target" ]; }; then return 1; fi
+    directory="$(dirname -- "$target")"
+    mkdir -p "$directory"
+    [ -d "$directory" ] && [ ! -L "$directory" ] || return 1
+    tmp=$(mktemp "$directory/.ch347-rotation.XXXXXX") || return 1
+    (
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        {
+            [ -z "$generation" ] || printf 'MSYS_GENERATION=%s\n' "$generation"
+            printf 'CH347_DISPLAY_ROTATION=%s\n' "$rotation"
+        } > "$tmp"
+        chmod 600 "$tmp"
+        mv -f "$tmp" "$target"
+        trap - EXIT HUP INT TERM
+    )
+}

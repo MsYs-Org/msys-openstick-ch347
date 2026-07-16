@@ -28,6 +28,7 @@ export CH347_LINK_STATE_FILE="$LINK_STATE_FILE"
 APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-$RUN_DIR/display-config.applied.env}"
 APPLIED_OVERLAY_FILE="${MSYS_CH347_APPLIED_OVERLAY_FILE:-$RUN_DIR/debug-overlay.applied.env}"
 APPLIED_CURSOR_FILE="${MSYS_CH347_APPLIED_CURSOR_FILE:-$RUN_DIR/cursor.applied.env}"
+APPLIED_ROTATION_FILE="${MSYS_CH347_APPLIED_ROTATION_FILE:-$RUN_DIR/rotation.applied.env}"
 READY_FILE="${MSYS_X11_READY_FILE:-$RUN_DIR/msys.ready}"
 if [ -n "${MSYS_DISPLAY_SESSION_STATE_FILE:-}" ]; then
     SESSION_STATE_FILE="$MSYS_DISPLAY_SESSION_STATE_FILE"
@@ -51,6 +52,7 @@ DISPLAY_READY=0
 PUBLISHED_DISPLAY_SIGNATURE=""
 PUBLISHED_INPUT_MODE=""
 LINK_ALERT_ACTIVE=0
+RELOAD_REQUESTED=0
 LAST_DEGRADED_NOTICE_AT=-3600
 MONITOR_INTERVAL="${MSYS_CH347_MONITOR_INTERVAL:-0.5}"
 LINK_NOTICE_MIN_INTERVAL="${MSYS_CH347_NOTICE_MIN_INTERVAL_SEC:-60}"
@@ -319,6 +321,67 @@ publish_applied_display_config()
         "$CH347_CONFIG_OVERLAY_INTERVAL_MS" "$generation"
     ch347_write_cursor_config "$APPLIED_CURSOR_FILE" \
         "$CH347_CONFIG_CURSOR_ENABLED" "$generation"
+    ch347_write_rotation_config "$APPLIED_ROTATION_FILE" \
+        "$CH347_DISPLAY_ROTATION" "$generation"
+}
+
+runtime_receipts_match()
+{
+    local generation="${MSYS_GENERATION:-0}"
+
+    grep -qx "MSYS_GENERATION=$generation" "$APPLIED_CONFIG_FILE" 2>/dev/null &&
+        grep -qx "DEBUG=$DEBUG" "$APPLIED_CONFIG_FILE" 2>/dev/null &&
+        grep -qx "FPS=$FPS" "$APPLIED_CONFIG_FILE" 2>/dev/null &&
+        grep -qx "XCAP_MAX_FPS=$XCAP_MAX_FPS" "$APPLIED_CONFIG_FILE" 2>/dev/null &&
+        grep -qx "XCAP_IDLE_FPS=$XCAP_IDLE_FPS" "$APPLIED_CONFIG_FILE" 2>/dev/null &&
+        grep -qx "MSYS_GENERATION=$generation" "$APPLIED_OVERLAY_FILE" 2>/dev/null &&
+        grep -qx "CH347_DEBUG_OVERLAY=$CH347_CONFIG_OVERLAY_ENABLED" "$APPLIED_OVERLAY_FILE" 2>/dev/null &&
+        grep -qx "CH347_DEBUG_OVERLAY_ALPHA=$CH347_CONFIG_OVERLAY_ALPHA" "$APPLIED_OVERLAY_FILE" 2>/dev/null &&
+        grep -qx "CH347_DEBUG_OVERLAY_SCALE=$CH347_CONFIG_OVERLAY_SCALE" "$APPLIED_OVERLAY_FILE" 2>/dev/null &&
+        grep -qx "CH347_DEBUG_OVERLAY_ITEMS=$CH347_CONFIG_OVERLAY_ITEMS" "$APPLIED_OVERLAY_FILE" 2>/dev/null &&
+        grep -qx "CH347_DEBUG_OVERLAY_INTERVAL_MS=$CH347_CONFIG_OVERLAY_INTERVAL_MS" "$APPLIED_OVERLAY_FILE" 2>/dev/null &&
+        grep -qx "MSYS_GENERATION=$generation" "$APPLIED_CURSOR_FILE" 2>/dev/null &&
+        grep -qx "CH347_CURSOR=$CH347_CONFIG_CURSOR_ENABLED" "$APPLIED_CURSOR_FILE" 2>/dev/null &&
+        grep -qx "MSYS_GENERATION=$generation" "$APPLIED_ROTATION_FILE" 2>/dev/null &&
+        grep -qx "CH347_DISPLAY_ROTATION=$CH347_DISPLAY_ROTATION" "$APPLIED_ROTATION_FILE" 2>/dev/null
+}
+
+reload_runtime_config()
+{
+    local daemon_pid=""
+    local signature=""
+
+    RELOAD_REQUESTED=0
+    load_display_config || return 1
+    load_debug_overlay_config || return 1
+    load_cursor_config || return 1
+    load_display_rotation || return 1
+    [ -f "$PID_FILE" ] && read -r daemon_pid < "$PID_FILE" || true
+    case "$daemon_pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$daemon_pid" 2>/dev/null || return 1
+    rm -f "$APPLIED_CONFIG_FILE" "$APPLIED_OVERLAY_FILE" \
+        "$APPLIED_CURSOR_FILE" "$APPLIED_ROTATION_FILE"
+    kill -USR1 "$daemon_pid" 2>/dev/null || return 1
+    for _ in $(seq 1 80); do
+        if runtime_receipts_match; then
+            # Rotation changes the existing RandR root and input matrix.  Do
+            # not acknowledge the HAL write until the same generation's
+            # display-session document has caught up with that live geometry.
+            # Non-layout tuning avoids this publisher entirely.
+            if signature=$(display_signature) &&
+                    { [ "$signature" != "$PUBLISHED_DISPLAY_SIGNATURE" ] ||
+                      [ "$EFFECTIVE_INPUT_MODE" != "$PUBLISHED_INPUT_MODE" ]; }; then
+                publish_display_state >/dev/null || return 1
+                remember_published_display_state "$signature"
+            fi
+            echo "msys-ch347-provider: runtime config applied generation=${MSYS_GENERATION:-0} daemon=$daemon_pid rotation=$CH347_DISPLAY_ROTATION"
+            return 0
+        fi
+        kill -0 "$daemon_pid" 2>/dev/null || return 1
+        sleep 0.05
+    done
+    echo "msys-ch347-provider: runtime config apply timed out daemon=$daemon_pid" >&2
+    return 1
 }
 
 bound_live_log()
@@ -625,7 +688,8 @@ cleanup()
             rm -f "$SESSION_STATE_FILE" "$SESSION_OWNER_FILE"
         fi
         rm -f "$READY_FILE" "$OWNER_FILE" "$APPLIED_CONFIG_FILE" \
-            "$APPLIED_OVERLAY_FILE" "$APPLIED_CURSOR_FILE" "$LINK_STATE_FILE"
+            "$APPLIED_OVERLAY_FILE" "$APPLIED_CURSOR_FILE" \
+            "$APPLIED_ROTATION_FILE" "$LINK_STATE_FILE"
     else
         echo "msys-ch347-provider: ownership moved; leaving replacement stack running"
     fi
@@ -637,7 +701,13 @@ handle_term()
     exit 0
 }
 
+request_runtime_reload()
+{
+    RELOAD_REQUESTED=1
+}
+
 trap handle_term INT TERM
+trap request_runtime_reload USR1
 trap cleanup EXIT
 
 # Claim before inspecting/stopping an existing stack.  This also prevents an
@@ -648,7 +718,7 @@ claim_ownership
 # before removing its predecessor's readiness edge, and must never use this
 # globally replaceable file as proof that its own publish call succeeded.
 rm -f "$READY_FILE" "$APPLIED_CONFIG_FILE" "$APPLIED_OVERLAY_FILE" \
-    "$APPLIED_CURSOR_FILE"
+    "$APPLIED_CURSOR_FILE" "$APPLIED_ROTATION_FILE"
 
 if [ -f "$PID_FILE" ]; then
     echo "msys-ch347-provider: stale or existing pid file found; stopping previous stack"
@@ -664,6 +734,11 @@ load_debug_overlay_config
 load_cursor_config
 load_display_rotation
 load_touch_calibration
+
+export MSYS_CH347_APPLIED_CONFIG_FILE="$APPLIED_CONFIG_FILE"
+export MSYS_CH347_APPLIED_OVERLAY_FILE="$APPLIED_OVERLAY_FILE"
+export MSYS_CH347_APPLIED_CURSOR_FILE="$APPLIED_CURSOR_FILE"
+export MSYS_CH347_APPLIED_ROTATION_FILE="$APPLIED_ROTATION_FILE"
 
 if [ -x "$START_SCRIPT" ]; then
     if ! "$START_SCRIPT"; then
@@ -729,6 +804,11 @@ while :; do
     # generation metadata after the replacement has become ready.
     if superseded; then exit 0; fi
 
+    if [ "$RELOAD_REQUESTED" = 1 ]; then
+        reload_runtime_config ||
+            echo "msys-ch347-provider: runtime config was not applied" >&2
+    fi
+
     observe_ch347_link_notice
 
     log_check_count=$((log_check_count + 1))
@@ -792,5 +872,8 @@ while :; do
     # dies.  Notice the shared failure domain before those clients can consume
     # five independent Core restart attempts and become quarantined.  A small
     # consecutive-failure threshold still filters a one-off xdpyinfo failure.
-    sleep "$MONITOR_INTERVAL"
+    # A runtime-control signal may interrupt the monitor delay.  The trap only
+    # requests an in-place reload; it must never trip `set -e` and make Core
+    # replace the provider generation.
+    sleep "$MONITOR_INTERVAL" || true
 done

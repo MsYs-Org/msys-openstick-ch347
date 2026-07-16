@@ -358,6 +358,8 @@ printf '  depth of root window:    24 planes\\n'
 
             x_launches = root / "x-launches"
             x_active = root / "x-active"
+            x_dimensions = root / "x-dimensions"
+            x_dimensions.write_text("320x480\n", encoding="ascii")
             sink_count = root / "sink-count"
             sink_active = root / "sink-active"
             capture_active = root / "capture-active"
@@ -379,12 +381,20 @@ while :; do sleep 1; done
 test -f "$FAKE_X_ACTIVE" || exit 1
 pid=$(cat "$FAKE_X_ACTIVE")
 kill -0 "$pid" 2>/dev/null || exit 1
+dimensions=320x480
+test ! -f "$FAKE_X_DIMENSIONS" || read -r dimensions <"$FAKE_X_DIMENSIONS"
 printf 'name of display: :77\n'
-printf '  dimensions:    320x480 pixels (84x127 millimeters)\n'
+printf '  dimensions:    %s pixels (84x127 millimeters)\n' "$dimensions"
 printf '  depth of root window:    24 planes\n'
 """,
             )
-            write_executable(commands / "xrandr", "#!/bin/sh\nexit 0\n")
+            write_executable(
+                commands / "xrandr",
+                """#!/bin/sh
+test "${1:-}" = --size || exit 1
+printf '%s\n' "$2" >"$FAKE_X_DIMENSIONS"
+""",
+            )
             write_executable(
                 commands / "lsusb",
                 """#!/bin/sh
@@ -395,12 +405,17 @@ printf '    |__ Port 1: Dev 2, If 4, Class=Vendor Specific Class, Driver=ch34x_p
             )
             arm = root / "fake-arm"
             write_executable(arm, "#!/bin/sh\nexit 0\n")
+            rotation = root / "rotation.env"
+            rotation.write_text(
+                "CH347_DISPLAY_ROTATION=normal\n", encoding="ascii"
+            )
             capture = root / "fake-capture"
             write_executable(
                 capture,
                 """#!/bin/bash
 printf '%s\n' "$$" >"$FAKE_CAPTURE_ACTIVE"
 trap 'exit 0' INT TERM
+trap ':' USR1
 while :; do sleep 1; done
 """,
             )
@@ -434,6 +449,7 @@ if test "$count" -le 5; then
     exit 75
 fi
 trap 'exit 76' INT TERM
+trap ':' USR1
 while :; do sleep 1; done
 """,
             )
@@ -467,10 +483,15 @@ while :; do sleep 1; done
                 "XVFB_NICE": "0",
                 "FAKE_X_LAUNCHES": str(x_launches),
                 "FAKE_X_ACTIVE": str(x_active),
+                "FAKE_X_DIMENSIONS": str(x_dimensions),
                 "FAKE_SINK_COUNT": str(sink_count),
                 "FAKE_SINK_ACTIVE": str(sink_active),
                 "FAKE_CAPTURE_ACTIVE": str(capture_active),
                 "FAKE_USB_RESET": str(usb_reset),
+                "CH347_ROTATION_FILE": str(rotation),
+                "MSYS_CH347_APPLIED_ROTATION_FILE": str(
+                    run_dir / "rotation.applied.env"
+                ),
             }
             process = subprocess.Popen(
                 ["bash", str(DAEMON)],
@@ -507,6 +528,49 @@ while :; do sleep 1; done
                 x_pids = [int(value) for value in x_launches.read_text().splitlines()]
                 self.assertEqual(len(x_pids), 1)
                 spawned.update(x_pids)
+
+                # A live settings change interrupts daemon wait(1), reloads
+                # capture/sink, and must preserve every process in the X
+                # session. Bash unsets the `wait -p` destination on the
+                # signal path, which previously tripped `set -u` here.
+                reload_capture = int(capture_active.read_text().strip())
+                reload_sink = int(sink_active.read_text().strip())
+                os.kill(process.pid, signal.SIGUSR1)
+                wait_until(
+                    lambda: "dirty_usb_x11_control_reload applied" in
+                    (run_dir / "live.log").read_text(encoding="utf-8")
+                )
+                time.sleep(0.1)
+                self.assertIsNone(process.poll())
+                self.assertTrue(process_alive(reload_capture))
+                self.assertTrue(process_alive(reload_sink))
+                self.assertEqual(
+                    int(capture_active.read_text().strip()), reload_capture
+                )
+                self.assertEqual(int(sink_active.read_text().strip()), reload_sink)
+                self.assertEqual(len(x_launches.read_text().splitlines()), 1)
+
+                rotation.write_text(
+                    "CH347_DISPLAY_ROTATION=right\n", encoding="ascii"
+                )
+                os.kill(process.pid, signal.SIGUSR1)
+                wait_until(
+                    lambda: (run_dir / "rotation.applied.env").is_file()
+                    and "CH347_DISPLAY_ROTATION=right" in
+                    (run_dir / "rotation.applied.env").read_text(
+                        encoding="ascii"
+                    )
+                )
+                time.sleep(0.1)
+                self.assertIsNone(process.poll())
+                self.assertEqual(x_dimensions.read_text().strip(), "480x320")
+                self.assertEqual(
+                    int(capture_active.read_text().strip()), reload_capture
+                )
+                self.assertEqual(int(sink_active.read_text().strip()), reload_sink)
+                self.assertTrue(process_alive(reload_capture))
+                self.assertTrue(process_alive(reload_sink))
+                self.assertEqual(len(x_launches.read_text().splitlines()), 1)
 
                 # The registry is rewritten with current children instead of
                 # accumulating dead capture/sink PIDs across unlimited retries.

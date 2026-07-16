@@ -44,8 +44,9 @@ Physical rotation is owned here as a display-output capability. The provider
 reads the small package-state `rotation.env`; `normal`, `right`, `inverted`,
 and `left` select the logical X11 geometry, rotate RGB565 frames into the fixed
 320x480 panel, and apply the exact inverse mapping to touch coordinates. HAL
-commits that file and restarts the display generation through Core, which then
-restores display consumers in profile order.
+commits that file and signals the active provider generation. The provider
+changes the existing RandR root and republishes the same-generation display
+session; Xorg, Shell and application clients remain connected throughout.
 
 Display tuning is package-state, not immutable-manifest state. The provider
 strictly parses `${MSYS_APP_STATE_DIR}/ch347/fps.env` as `DEBUG`, `FPS`,
@@ -103,6 +104,13 @@ a generation-bound applied receipt before READY, so HAL and Settings never
 confuse a saved value with the value running in the sink. Older package
 versions safely ignore the extra state file and retain their cursor-off
 default during rollback.
+
+Version 0.1.24 applies FPS, sink logging, debug overlay, touch cursor and
+physical rotation through the active provider/daemon `SIGUSR1` chain. Rotation
+uses RandR on the existing `:24` root and reloads capture/touch mapping in
+place; Xorg, Shell and application processes keep their PIDs. The stablev1
+single-bbox dirty renderer is unchanged. Its signal-safe child wait also keeps
+the daemon alive when Bash unsets the `wait -p` result during a control signal.
 
 A CH347 interface enumerated at 12M is treated as a loose/degraded physical
 link, never as a usable display transport.  Recovery now issues a device-only

@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BIN_DIR="${BIN_DIR:-$PROJECT_DIR/bin}"
 CH347_DIR="${CH347_DIR:-$PROJECT_DIR/ch347}"
+DISPLAY_CONFIG_HELPER="${CH347_DISPLAY_CONFIG_HELPER:-$SCRIPT_DIR/ch347_display_config.sh}"
 
 FPS="${FPS:-30}"
 CAPTURE="${CAPTURE:-xdamage}"
@@ -12,6 +13,10 @@ XCAP_MAX_FPS="${XCAP_MAX_FPS:-$FPS}"
 XCAP_DEBUG="${XCAP_DEBUG:-0}"
 XCAP_OUTPUT="${XCAP_OUTPUT:-frame}"
 XCAP_FPS_FILE="${XCAP_FPS_FILE:-$PROJECT_DIR/ch347/fps.env}"
+CH347_FPS_FILE="${CH347_FPS_FILE:-$XCAP_FPS_FILE}"
+CH347_DEBUG_OVERLAY_FILE="${CH347_DEBUG_OVERLAY_FILE:-$PROJECT_DIR/ch347/debug_overlay.env}"
+CH347_CURSOR_FILE="${CH347_CURSOR_FILE:-$PROJECT_DIR/ch347/cursor.env}"
+CH347_ROTATION_FILE="${CH347_ROTATION_FILE:-$PROJECT_DIR/ch347/rotation.env}"
 XCAP_NICE="${XCAP_NICE:--5}"
 CH347_SINK_NICE="${CH347_SINK_NICE:--5}"
 XVFB_NICE="${XVFB_NICE:-5}"
@@ -127,6 +132,11 @@ STACK_OWNER_TOKEN="${CH347_STACK_OWNER_TOKEN:-}"
 CH347_TOUCH_MODE_FILE="${CH347_TOUCH_MODE_FILE:-$RUN_DIR/touch_mode}"
 FRAME_MAILBOX="${CH347_FRAME_MAILBOX:-$RUN_DIR/frame.mailbox}"
 LOG_FILE="$RUN_DIR/live.log"
+APPLIED_CONFIG_FILE="${MSYS_CH347_APPLIED_CONFIG_FILE:-}"
+APPLIED_OVERLAY_FILE="${MSYS_CH347_APPLIED_OVERLAY_FILE:-}"
+APPLIED_CURSOR_FILE="${MSYS_CH347_APPLIED_CURSOR_FILE:-}"
+APPLIED_ROTATION_FILE="${MSYS_CH347_APPLIED_ROTATION_FILE:-}"
+PROVIDER_GENERATION="${MSYS_GENERATION:-0}"
 mkdir -p "$RUN_DIR"
 if [ ! -f "$CH347_TOUCH_MODE_FILE" ]; then
     printf '%s\n' "$CH347_TOUCH_MODE" > "$CH347_TOUCH_MODE_FILE"
@@ -142,6 +152,8 @@ STREAM_CAP_PID=""
 STREAM_SINK_PID=""
 X_SESSION_LOST=0
 PUBLISHED_CH347_LINK_STATE=""
+RELOAD_REQUESTED=0
+DISPLAY_CONFIG_LOADED=0
 
 case "$CH347_RESTART_MAX" in
     ''|*[!0-9]*) CH347_RESTART_MAX=0 ;;
@@ -372,8 +384,14 @@ handle_term()
     exit 0
 }
 
+request_runtime_reload()
+{
+    RELOAD_REQUESTED=1
+}
+
 trap cleanup EXIT
 trap handle_term INT TERM
+trap request_runtime_reload USR1
 
 x_root_dimensions()
 {
@@ -406,6 +424,182 @@ validate_x_root_dimensions()
         echo "X root size mismatch expected=${WIDTH}x${HEIGHT} actual=$dimensions" >>"$LOG_FILE"
         return 1
     fi
+}
+
+rotation_geometry()
+{
+    case "$1" in
+        normal|inverted) printf '320 480\n' ;;
+        right|left) printf '480 320\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+publish_applied_runtime_config()
+{
+    [ -z "$APPLIED_CONFIG_FILE" ] ||
+        ch347_write_display_config "$APPLIED_CONFIG_FILE" "$DEBUG" "$FPS" \
+            "$XCAP_MAX_FPS" "$XCAP_IDLE_FPS" "$PROVIDER_GENERATION" || return 1
+    [ -z "$APPLIED_OVERLAY_FILE" ] ||
+        ch347_write_debug_overlay_config "$APPLIED_OVERLAY_FILE" \
+            "$CH347_CONFIG_OVERLAY_ENABLED" "$CH347_CONFIG_OVERLAY_ALPHA" \
+            "$CH347_CONFIG_OVERLAY_SCALE" "$CH347_CONFIG_OVERLAY_ITEMS" \
+            "$CH347_CONFIG_OVERLAY_INTERVAL_MS" "$PROVIDER_GENERATION" || return 1
+    [ -z "$APPLIED_CURSOR_FILE" ] ||
+        ch347_write_cursor_config "$APPLIED_CURSOR_FILE" \
+            "$CH347_CONFIG_CURSOR_ENABLED" "$PROVIDER_GENERATION" || return 1
+    [ -z "$APPLIED_ROTATION_FILE" ] ||
+        ch347_write_rotation_config "$APPLIED_ROTATION_FILE" \
+            "$DISPLAY_ROTATION" "$PROVIDER_GENERATION" || return 1
+}
+
+pause_capture_for_rotation()
+{
+    local state=""
+
+    [ -n "$STREAM_CAP_PID" ] || return 1
+    kill -STOP "$STREAM_CAP_PID" 2>/dev/null || return 1
+    for _ in $(seq 1 50); do
+        state="$(awk '/^State:/ { print $2 }' \
+            "/proc/$STREAM_CAP_PID/status" 2>/dev/null || true)"
+        case "$state" in
+            T|t)
+                # XShmGetImage is synchronous. Give Xorg one bounded moment
+                # to finish a request that was already sent before SIGSTOP,
+                # then use a second client round-trip as the resize barrier.
+                sleep 0.03
+                DISPLAY="$DISPLAY_ID" xdpyinfo >/dev/null 2>&1 || {
+                    kill -CONT "$STREAM_CAP_PID" 2>/dev/null || true
+                    return 1
+                }
+                return 0
+                ;;
+        esac
+        sleep 0.01
+    done
+    kill -CONT "$STREAM_CAP_PID" 2>/dev/null || true
+    return 1
+}
+
+resume_capture_after_rotation()
+{
+    local reload="${1:-0}"
+
+    if [ "$reload" = 1 ]; then
+        kill -USR1 "$STREAM_CAP_PID" 2>/dev/null || {
+            kill -CONT "$STREAM_CAP_PID" 2>/dev/null || true
+            return 1
+        }
+    fi
+    kill -CONT "$STREAM_CAP_PID" 2>/dev/null
+}
+
+apply_runtime_config()
+{
+    local new_debug new_fps new_max_fps new_idle_fps
+    local new_overlay new_alpha new_scale new_items new_interval
+    local new_cursor new_rotation new_width new_height geometry
+    local capture_reload_sent=0
+
+    RELOAD_REQUESTED=0
+    if [ "$DISPLAY_CONFIG_LOADED" != 1 ]; then
+        if [ ! -f "$DISPLAY_CONFIG_HELPER" ]; then
+            echo "dirty_usb_x11_control_reload rejected=config-helper" >>"$LOG_FILE"
+            return 1
+        fi
+        # shellcheck disable=SC1090
+        . "$DISPLAY_CONFIG_HELPER"
+        DISPLAY_CONFIG_LOADED=1
+    fi
+    if ! ch347_read_display_config "$CH347_FPS_FILE"; then
+        echo "dirty_usb_x11_control_reload rejected=display-config" >>"$LOG_FILE"
+        return 1
+    fi
+    new_debug="$CH347_CONFIG_DEBUG"
+    new_fps="$CH347_CONFIG_FPS"
+    new_max_fps="$CH347_CONFIG_MAX_FPS"
+    new_idle_fps="$CH347_CONFIG_IDLE_FPS"
+    if ! ch347_read_debug_overlay_config "$CH347_DEBUG_OVERLAY_FILE"; then
+        echo "dirty_usb_x11_control_reload rejected=debug-overlay" >>"$LOG_FILE"
+        return 1
+    fi
+    new_overlay="$CH347_CONFIG_OVERLAY_ENABLED"
+    new_alpha="$CH347_CONFIG_OVERLAY_ALPHA"
+    new_scale="$CH347_CONFIG_OVERLAY_SCALE"
+    new_items="$CH347_CONFIG_OVERLAY_ITEMS"
+    new_interval="$CH347_CONFIG_OVERLAY_INTERVAL_MS"
+    if ! ch347_read_cursor_config "$CH347_CURSOR_FILE"; then
+        echo "dirty_usb_x11_control_reload rejected=cursor" >>"$LOG_FILE"
+        return 1
+    fi
+    new_cursor="$CH347_CONFIG_CURSOR_ENABLED"
+    if ! ch347_read_rotation_config "$CH347_ROTATION_FILE"; then
+        echo "dirty_usb_x11_control_reload rejected=rotation" >>"$LOG_FILE"
+        return 1
+    fi
+    new_rotation="$CH347_CONFIG_ROTATION"
+    geometry="$(rotation_geometry "$new_rotation")" || return 1
+    read -r new_width new_height <<EOF
+$geometry
+EOF
+
+    if [ "$new_rotation" != "$DISPLAY_ROTATION" ] ||
+            [ "$new_width" != "$WIDTH" ] || [ "$new_height" != "$HEIGHT" ]; then
+        if [ "$CAPTURE" != xdamage ]; then
+            echo "dirty_usb_x11_control_reload rejected=rotation-capture-$CAPTURE" >>"$LOG_FILE"
+            return 1
+        fi
+        if ! pause_capture_for_rotation; then
+            echo "dirty_usb_x11_control_reload rejected=capture-pause" >>"$LOG_FILE"
+            return 1
+        fi
+        if ! DISPLAY="$DISPLAY_ID" xrandr --size "${new_width}x${new_height}" \
+                >>"$LOG_FILE" 2>&1; then
+            resume_capture_after_rotation 0 || true
+            echo "dirty_usb_x11_control_reload rejected=xrandr-${new_width}x${new_height}" >>"$LOG_FILE"
+            return 1
+        fi
+        WIDTH="$new_width"
+        HEIGHT="$new_height"
+        DISPLAY_ROTATION="$new_rotation"
+        validate_x_root_dimensions || {
+            resume_capture_after_rotation 1 || true
+            echo "dirty_usb_x11_control_reload rejected=root-geometry" >>"$LOG_FILE"
+            return 1
+        }
+        if ! resume_capture_after_rotation 1; then
+            echo "dirty_usb_x11_control_reload rejected=capture-resume" >>"$LOG_FILE"
+            return 1
+        fi
+        capture_reload_sent=1
+    fi
+
+    DEBUG="$new_debug"
+    FPS="$new_fps"
+    XCAP_MAX_FPS="$new_max_fps"
+    XCAP_IDLE_FPS="$new_idle_fps"
+    CH347_DEBUG_OVERLAY="$new_overlay"
+    CH347_DEBUG_OVERLAY_ALPHA="$new_alpha"
+    CH347_DEBUG_OVERLAY_SCALE="$new_scale"
+    CH347_CONFIG_OVERLAY_ITEMS="$new_items"
+    CH347_DEBUG_OVERLAY_ITEMS="$(ch347_debug_overlay_items_text "$new_items")"
+    CH347_DEBUG_OVERLAY_INTERVAL_MS="$new_interval"
+    CH347_CURSOR="$new_cursor"
+    CH347_CONFIG_CURSOR_ENABLED="$new_cursor"
+    CH347_CONFIG_OVERLAY_ENABLED="$new_overlay"
+    CH347_CONFIG_OVERLAY_ALPHA="$new_alpha"
+    CH347_CONFIG_OVERLAY_SCALE="$new_scale"
+    CH347_CONFIG_OVERLAY_INTERVAL_MS="$new_interval"
+
+    if [ "$capture_reload_sent" != 1 ]; then
+        [ -n "$STREAM_CAP_PID" ] && kill -USR1 "$STREAM_CAP_PID" 2>/dev/null || return 1
+    fi
+    [ -n "$STREAM_SINK_PID" ] && kill -USR1 "$STREAM_SINK_PID" 2>/dev/null || return 1
+    publish_applied_runtime_config || {
+        echo "dirty_usb_x11_control_reload rejected=receipt" >>"$LOG_FILE"
+        return 1
+    }
+    echo "dirty_usb_x11_control_reload applied generation=$PROVIDER_GENERATION debug=$DEBUG fps=$FPS idle_fps=$XCAP_IDLE_FPS overlay=$CH347_DEBUG_OVERLAY cursor=$CH347_CURSOR rotation=$DISPLAY_ROTATION logical=${WIDTH}x${HEIGHT}" >>"$LOG_FILE"
 }
 
 start_x_stack()
@@ -570,6 +764,7 @@ run_stream_once()
             XCAP_DEBUG="$XCAP_DEBUG" XCAP_OUTPUT=frame \
             XCAP_ROTATION="$DISPLAY_ROTATION" \
             XCAP_FPS_FILE="$XCAP_FPS_FILE" \
+            XCAP_ROTATION_FILE="$CH347_ROTATION_FILE" \
             XCAP_MAILBOX="$FRAME_MAILBOX" \
                 nice -n "$XCAP_NICE" \
                 "$XCAP_BIN" "$DISPLAY_ID" "$WIDTH" "$HEIGHT" \
@@ -578,6 +773,10 @@ run_stream_once()
             STREAM_CAP_PID="$cap_pid"
 
             CH347_USB_DEV="$usb_dev" CH347_DEBUG="$DEBUG" \
+              CH347_FPS_FILE="$CH347_FPS_FILE" \
+              CH347_DEBUG_OVERLAY_FILE="$CH347_DEBUG_OVERLAY_FILE" \
+              CH347_CURSOR_FILE="$CH347_CURSOR_FILE" \
+              CH347_ROTATION_FILE="$CH347_ROTATION_FILE" \
               CH347_DEBUG_OVERLAY="$CH347_DEBUG_OVERLAY" \
               CH347_DEBUG_OVERLAY_ALPHA="$CH347_DEBUG_OVERLAY_ALPHA" \
               CH347_DEBUG_OVERLAY_SCALE="$CH347_DEBUG_OVERLAY_SCALE" \
@@ -611,10 +810,45 @@ run_stream_once()
             sink_pid="$!"
             STREAM_SINK_PID="$sink_pid"
             refresh_pid_file
-            finished_pid=""
-            wait -n -p finished_pid "$cap_pid" "$sink_pid"
-            first_rc="$?"
-            if [ "$finished_pid" = "$sink_pid" ]; then
+            while :; do
+                finished_pid=""
+                wait -n -p finished_pid "$cap_pid" "$sink_pid"
+                first_rc="$?"
+                if [ "$RELOAD_REQUESTED" = 1 ] &&
+                        kill -0 "$cap_pid" 2>/dev/null &&
+                        kill -0 "$sink_pid" 2>/dev/null; then
+                    apply_runtime_config || true
+                    continue
+                fi
+                # Bash unsets the variable named by `wait -p` when a trapped
+                # signal interrupts wait(1).  With `set -u`, expanding it
+                # directly would terminate the daemon after a successful
+                # runtime reload and tear down the still-healthy X session.
+                if [ -n "${finished_pid:-}" ]; then
+                    break
+                fi
+                # Bash may interrupt wait(1) for a trapped signal without
+                # identifying a child. Continue waiting while both stream
+                # processes remain alive; a control HUP is not a transport
+                # failure and must never enter the reconnect path.
+                if kill -0 "$cap_pid" 2>/dev/null &&
+                        kill -0 "$sink_pid" 2>/dev/null; then
+                    # Some Bash versions return 127 on the first wait after an
+                    # interrupted `wait -n`.  Avoid a tight poll while keeping
+                    # both children and the existing X session intact.
+                    sleep 0.02
+                    continue
+                fi
+                if ! kill -0 "$sink_pid" 2>/dev/null; then
+                    finished_pid="$sink_pid"
+                else
+                    finished_pid="$cap_pid"
+                fi
+                wait "$finished_pid" 2>/dev/null
+                first_rc="$?"
+                break
+            done
+            if [ "${finished_pid:-}" = "$sink_pid" ]; then
                 sink_rc="$first_rc"
                 STREAM_SINK_PID=""
                 kill "$cap_pid" 2>/dev/null || true
